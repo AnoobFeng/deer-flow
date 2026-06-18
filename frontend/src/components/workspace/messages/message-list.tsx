@@ -29,7 +29,10 @@ import {
 import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
 import type { Subtask } from "@/core/tasks";
 import { useUpdateSubtask } from "@/core/tasks/context";
-import { parseSubtaskResult } from "@/core/tasks/subtask-result";
+import {
+  getPendingSubtaskStatus,
+  parseSubtaskResult,
+} from "@/core/tasks/subtask-result";
 import type { AgentThreadState } from "@/core/threads";
 import { cn } from "@/lib/utils";
 
@@ -275,6 +278,11 @@ export function MessageList({
         />
         {groupedMessages.map((group, groupIndex) => {
           const turnUsageMessages = turnUsageMessagesByGroupIndex[groupIndex];
+          const groupIsLoading =
+            thread.isLoading &&
+            !groupedMessages
+              .slice(groupIndex + 1)
+              .some((nextGroup) => nextGroup.type === "human");
 
           if (group.type === "human" || group.type === "assistant") {
             return (
@@ -359,12 +367,20 @@ export function MessageList({
               if (message.type === "ai") {
                 for (const toolCall of message.tool_calls ?? []) {
                   if (toolCall.name === "task") {
+                    const status = getPendingSubtaskStatus(
+                      toolCall.id,
+                      group.messages,
+                      groupIsLoading,
+                    );
                     const task: Subtask = {
                       id: toolCall.id!,
                       subagent_type: toolCall.args.subagent_type,
                       description: toolCall.args.description,
                       prompt: toolCall.args.prompt,
-                      status: "in_progress",
+                      status,
+                      ...(status === "failed"
+                        ? { error: t.subtasks.failed }
+                        : {}),
                     };
                     updateSubtask(task);
                     tasks.add(task);
@@ -402,7 +418,7 @@ export function MessageList({
                   <MessageGroup
                     key={"thinking-group-" + message.id}
                     messages={[message]}
-                    isLoading={thread.isLoading}
+                    isLoading={groupIsLoading}
                     tokenDebugSteps={tokenDebugSteps.filter(
                       (step) => step.messageId === message.id,
                     )}
@@ -422,7 +438,7 @@ export function MessageList({
                   <SubtaskCard
                     key={"task-group-" + taskId}
                     taskId={taskId!}
-                    isLoading={thread.isLoading}
+                    isLoading={groupIsLoading}
                   />,
                 );
               }
