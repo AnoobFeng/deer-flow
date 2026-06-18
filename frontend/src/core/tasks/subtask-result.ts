@@ -138,7 +138,7 @@ export function hasSubtaskToolResult(
   );
 }
 
-export function getPendingSubtaskStatus(
+export function derivePendingSubtaskStatus(
   toolCallId: string | undefined,
   messages: Message[],
   isCurrentTurnLoading: boolean,

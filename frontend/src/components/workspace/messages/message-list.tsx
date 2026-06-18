@@ -30,7 +30,7 @@ import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
 import type { Subtask } from "@/core/tasks";
 import { useUpdateSubtask } from "@/core/tasks/context";
 import {
-  getPendingSubtaskStatus,
+  derivePendingSubtaskStatus,
   parseSubtaskResult,
 } from "@/core/tasks/subtask-result";
 import type { AgentThreadState } from "@/core/threads";
@@ -183,6 +183,7 @@ export function MessageList({
   const updateSubtask = useUpdateSubtask();
   const messages = thread.messages;
   const groupedMessages = getMessageGroups(messages);
+  const lastGroupIndex = groupedMessages.length - 1;
   const turnUsageMessagesByGroupIndex =
     getAssistantTurnUsageMessages(groupedMessages);
   const tokenDebugSteps = useMemo(
@@ -279,10 +280,7 @@ export function MessageList({
         {groupedMessages.map((group, groupIndex) => {
           const turnUsageMessages = turnUsageMessagesByGroupIndex[groupIndex];
           const groupIsLoading =
-            thread.isLoading &&
-            !groupedMessages
-              .slice(groupIndex + 1)
-              .some((nextGroup) => nextGroup.type === "human");
+            thread.isLoading && groupIndex === lastGroupIndex;
 
           if (group.type === "human" || group.type === "assistant") {
             return (
@@ -367,13 +365,17 @@ export function MessageList({
               if (message.type === "ai") {
                 for (const toolCall of message.tool_calls ?? []) {
                   if (toolCall.name === "task") {
-                    const status = getPendingSubtaskStatus(
-                      toolCall.id,
+                    const taskId = toolCall.id;
+                    if (!taskId) {
+                      continue;
+                    }
+                    const status = derivePendingSubtaskStatus(
+                      taskId,
                       group.messages,
                       groupIsLoading,
                     );
                     const task: Subtask = {
-                      id: toolCall.id!,
+                      id: taskId,
                       subagent_type: toolCall.args.subagent_type,
                       description: toolCall.args.description,
                       prompt: toolCall.args.prompt,
@@ -430,14 +432,14 @@ export function MessageList({
               } else if (message.id) {
                 subagentDebugMessageIds.push(message.id);
               }
-              const taskIds = message.tool_calls
-                ?.filter((toolCall) => toolCall.name === "task")
-                .map((toolCall) => toolCall.id);
+              const taskIds = message.tool_calls?.flatMap((toolCall) =>
+                toolCall.name === "task" && toolCall.id ? [toolCall.id] : [],
+              );
               for (const taskId of taskIds ?? []) {
                 results.push(
                   <SubtaskCard
                     key={"task-group-" + taskId}
-                    taskId={taskId!}
+                    taskId={taskId}
                     isLoading={groupIsLoading}
                   />,
                 );

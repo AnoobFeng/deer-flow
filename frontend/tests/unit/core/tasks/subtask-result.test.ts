@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   SUBAGENT_ERROR_KEY,
   SUBAGENT_STATUS_KEY,
-  getPendingSubtaskStatus,
+  derivePendingSubtaskStatus,
   hasSubtaskToolResult,
   parseSubtaskResult,
 } from "@/core/tasks/subtask-result";
@@ -165,11 +165,11 @@ describe("hasSubtaskToolResult", () => {
   });
 });
 
-describe("getPendingSubtaskStatus", () => {
+describe("derivePendingSubtaskStatus", () => {
   it("keeps a task in progress while its own assistant turn is loading", () => {
     const messages = [{ type: "ai" }] as Message[];
 
-    expect(getPendingSubtaskStatus("call_task_1", messages, true)).toBe(
+    expect(derivePendingSubtaskStatus("call_task_1", messages, true)).toBe(
       "in_progress",
     );
   });
@@ -177,7 +177,7 @@ describe("getPendingSubtaskStatus", () => {
   it("does not revive an earlier unfinished task during a later turn", () => {
     const messages = [{ type: "ai" }] as Message[];
 
-    expect(getPendingSubtaskStatus("call_task_1", messages, false)).toBe(
+    expect(derivePendingSubtaskStatus("call_task_1", messages, false)).toBe(
       "failed",
     );
   });
@@ -188,7 +188,7 @@ describe("getPendingSubtaskStatus", () => {
       { type: "tool", tool_call_id: "call_task_1" },
     ] as Message[];
 
-    expect(getPendingSubtaskStatus("call_task_1", messages, false)).toBe(
+    expect(derivePendingSubtaskStatus("call_task_1", messages, false)).toBe(
       "in_progress",
     );
   });
