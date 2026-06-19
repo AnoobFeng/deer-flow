@@ -356,7 +356,7 @@ class RunRepository(RunStore):
             if usage_by_model:
                 for model, usage in usage_by_model.items():
                     entry = by_model.setdefault(model, {"tokens": 0, "runs": 0})
-                    entry["tokens"] += usage["total_tokens"]
+                    entry["tokens"] += usage.get("total_tokens", 0)
                     entry["runs"] += 1
             else:
                 model = r.model_name or "unknown"
