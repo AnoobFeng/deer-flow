@@ -57,7 +57,7 @@ export function useThreadChat() {
   }, []);
 
   useEffect(() => {
-    if (isNewPath) {
+    if (pathname.endsWith("/new")) {
       const nextThreadId = newThreadIdRef.current ?? uuid();
       newThreadIdRef.current = nextThreadId;
       setIsNewThreadState(true);
@@ -75,7 +75,7 @@ export function useThreadChat() {
     }
     setIsNewThreadState(false);
     setThreadIdState(threadIdFromPath);
-  }, [isNewPath, threadIdFromPath]);
+  }, [pathname, threadIdFromPath]);
 
   useEffect(() => {
     const handleReset = (event: Event) => {
