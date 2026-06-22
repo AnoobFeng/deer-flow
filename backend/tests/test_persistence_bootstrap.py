@@ -212,9 +212,7 @@ async def test_token_usage_column_parity_between_fresh_and_upgraded(tmp_path: Pa
         # Pin the contract: the column must have the same nullability after
         # either bootstrap path. If 0002 ever drifts from the model's
         # ``Mapped[dict]`` (i.e. ``nullable=False``), this fires.
-        assert fresh_col["nullable"] == upgraded_col["nullable"], (
-            f"nullability drift: fresh={fresh_col['nullable']} upgraded={upgraded_col['nullable']}"
-        )
+        assert fresh_col["nullable"] == upgraded_col["nullable"], f"nullability drift: fresh={fresh_col['nullable']} upgraded={upgraded_col['nullable']}"
         # The model declares Mapped[dict] (non-optional) -> NOT NULL.
         assert fresh_col["nullable"] is False
         assert upgraded_col["nullable"] is False
@@ -230,42 +228,27 @@ async def test_token_usage_column_parity_between_fresh_and_upgraded(tmp_path: Pa
 
 class TestDecideState:
     def test_empty(self):
-        assert (
-            _decide_state({"has_alembic_version": False, "has_deerflow_tables": False})
-            == "empty"
-        )
+        assert _decide_state({"has_alembic_version": False, "has_deerflow_tables": False}) == "empty"
 
     def test_empty_with_unrelated_tables(self):
         # LangGraph checkpointer tables present but DeerFlow has nothing yet.
         # ``has_deerflow_tables`` is derived from the metadata intersection in
         # production, so the only thing the decision function needs is the
         # bool itself.
-        assert (
-            _decide_state({"has_alembic_version": False, "has_deerflow_tables": False})
-            == "empty"
-        )
+        assert _decide_state({"has_alembic_version": False, "has_deerflow_tables": False}) == "empty"
 
     def test_legacy(self):
-        assert (
-            _decide_state({"has_alembic_version": False, "has_deerflow_tables": True})
-            == "legacy"
-        )
+        assert _decide_state({"has_alembic_version": False, "has_deerflow_tables": True}) == "legacy"
 
     def test_versioned(self):
-        assert (
-            _decide_state({"has_alembic_version": True, "has_deerflow_tables": True})
-            == "versioned"
-        )
+        assert _decide_state({"has_alembic_version": True, "has_deerflow_tables": True}) == "versioned"
 
     def test_versioned_takes_precedence_over_empty(self):
         # Pathological: alembic_version row exists but no managed tables yet
         # (e.g. someone restored only the alembic_version table from backup).
         # We still go versioned -> upgrade head, which is the right thing:
         # alembic will run every revision from base.
-        assert (
-            _decide_state({"has_alembic_version": True, "has_deerflow_tables": False})
-            == "versioned"
-        )
+        assert _decide_state({"has_alembic_version": True, "has_deerflow_tables": False}) == "versioned"
 
 
 # ---------------------------------------------------------------------------

@@ -86,10 +86,6 @@ def test_env_module_wires_busy_timeout_for_sqlite() -> None:
     env_path = Path(__file__).resolve().parents[1] / "packages/harness/deerflow/persistence/migrations/env.py"
     src = env_path.read_text(encoding="utf-8")
     assert "PRAGMA busy_timeout=30000" in src or "PRAGMA busy_timeout = 30000" in src, (
-        "env.py must set busy_timeout on its alembic-spawned engine; without it, "
-        "cross-process bootstrap on SQLite fails fast instead of waiting for the file lock"
+        "env.py must set busy_timeout on its alembic-spawned engine; without it, cross-process bootstrap on SQLite fails fast instead of waiting for the file lock"
     )
-    assert 'listens_for(connectable.sync_engine, "connect")' in src, (
-        "busy_timeout must be wired via an event listener so EVERY connection "
-        "alembic opens gets the PRAGMA, not just one initial probe"
-    )
+    assert 'listens_for(connectable.sync_engine, "connect")' in src, "busy_timeout must be wired via an event listener so EVERY connection alembic opens gets the PRAGMA, not just one initial probe"
