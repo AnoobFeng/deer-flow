@@ -125,17 +125,19 @@ _PG_LOCK_KEY = 0x0DEE_12F1_0BEE_3682
 # ``test_baseline_table_names_constant_matches_0001`` pins this set against
 # what 0001 actually creates -- editing 0001 without updating this constant
 # (or vice versa) fires that test.
-_BASELINE_TABLE_NAMES: frozenset[str] = frozenset({
-    "channel_connections",
-    "channel_conversations",
-    "channel_credentials",
-    "channel_oauth_states",
-    "feedback",
-    "run_events",
-    "runs",
-    "threads_meta",
-    "users",
-})
+_BASELINE_TABLE_NAMES: frozenset[str] = frozenset(
+    {
+        "channel_connections",
+        "channel_conversations",
+        "channel_credentials",
+        "channel_oauth_states",
+        "feedback",
+        "run_events",
+        "runs",
+        "threads_meta",
+        "users",
+    }
+)
 
 
 # Per-engine SQLite bootstrap locks. Per-engine (not module-global) so each
@@ -283,11 +285,7 @@ def _run_baseline_create_all_sync(sync_conn: Any) -> None:
     except ImportError:
         logger.debug("deerflow.persistence.models not found; baseline backfill may be incomplete")
 
-    baseline_tables = [
-        Base.metadata.tables[name]
-        for name in _BASELINE_TABLE_NAMES
-        if name in Base.metadata.tables
-    ]
+    baseline_tables = [Base.metadata.tables[name] for name in _BASELINE_TABLE_NAMES if name in Base.metadata.tables]
     Base.metadata.create_all(sync_conn, tables=baseline_tables, checkfirst=True)
 
 

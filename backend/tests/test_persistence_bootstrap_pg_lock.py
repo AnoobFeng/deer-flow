@@ -78,9 +78,7 @@ async def test_postgres_lock_disables_idle_in_transaction_kill_before_locking() 
     # 2. SET LOCAL precedes pg_advisory_lock.
     lock_idx = next((i for i, s in enumerate(sqls) if "pg_advisory_lock" in s), None)
     assert lock_idx is not None, f"pg_advisory_lock never executed; saw: {sqls}"
-    assert set_local_idx < lock_idx, (
-        f"SET LOCAL must run before pg_advisory_lock; got order {sqls}"
-    )
+    assert set_local_idx < lock_idx, f"SET LOCAL must run before pg_advisory_lock; got order {sqls}"
 
     # 3. pg_advisory_unlock still fires on exit.
     assert any("pg_advisory_unlock" in s for s in sqls), f"pg_advisory_unlock missing; saw: {sqls}"

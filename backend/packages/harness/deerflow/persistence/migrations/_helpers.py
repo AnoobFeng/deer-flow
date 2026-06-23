@@ -91,8 +91,7 @@ def _check_column_drift(table: str, desired: sa.Column, actual: dict) -> None:
 
     if diffs:
         logger.warning(
-            "safe_add_column: %s.%s already exists but drifts from the model definition (%s); "
-            "leaving as-is -- a manual ALTER may be needed to match the model.",
+            "safe_add_column: %s.%s already exists but drifts from the model definition (%s); leaving as-is -- a manual ALTER may be needed to match the model.",
             table,
             desired.name,
             "; ".join(diffs),

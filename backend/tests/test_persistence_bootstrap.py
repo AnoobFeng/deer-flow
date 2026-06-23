@@ -267,14 +267,7 @@ async def test_legacy_with_manual_workaround_column_warns_on_drift(
         col = await _runs_column_meta(engine, "token_usage_by_model")
         assert col["nullable"] is True
 
-        drift_warnings = [
-            r
-            for r in caplog.records
-            if r.levelname == "WARNING"
-            and r.name == "deerflow.persistence.migrations._helpers"
-            and "safe_add_column" in r.getMessage()
-            and "token_usage_by_model" in r.getMessage()
-        ]
+        drift_warnings = [r for r in caplog.records if r.levelname == "WARNING" and r.name == "deerflow.persistence.migrations._helpers" and "safe_add_column" in r.getMessage() and "token_usage_by_model" in r.getMessage()]
         assert drift_warnings, "expected safe_add_column to warn about the drifted column"
         assert "nullable" in drift_warnings[0].getMessage()
     finally:
@@ -335,9 +328,7 @@ async def test_token_usage_column_parity_between_fresh_and_upgraded(tmp_path: Pa
         assert upgraded_col["nullable"] is False
         # Normalize through the same helper the drift warning uses so dialect
         # quirks (outer parens, ``::cast``) do not cause false negatives.
-        assert _normalize_default(fresh_col.get("default")) == _normalize_default(upgraded_col.get("default")), (
-            f"server_default drift: fresh={fresh_col.get('default')!r} upgraded={upgraded_col.get('default')!r}"
-        )
+        assert _normalize_default(fresh_col.get("default")) == _normalize_default(upgraded_col.get("default")), f"server_default drift: fresh={fresh_col.get('default')!r} upgraded={upgraded_col.get('default')!r}"
     finally:
         await fresh.dispose()
         await upgraded.dispose()
@@ -403,36 +394,22 @@ async def test_create_all_and_alembic_upgrade_produce_same_schema(tmp_path: Path
         # Same set of tables. A mismatch here means either ``Base.metadata``
         # has gained/lost a table without a matching revision, or a revision
         # creates/drops a table without a matching model change.
-        assert set(fresh_tables) == set(upgraded_tables), (
-            f"table-set drift between create_all and alembic upgrade: "
-            f"only-in-create_all={set(fresh_tables) - set(upgraded_tables)} "
-            f"only-in-alembic={set(upgraded_tables) - set(fresh_tables)}"
-        )
+        assert set(fresh_tables) == set(upgraded_tables), f"table-set drift between create_all and alembic upgrade: only-in-create_all={set(fresh_tables) - set(upgraded_tables)} only-in-alembic={set(upgraded_tables) - set(fresh_tables)}"
 
         for table in sorted(fresh_tables):
             fresh_cols = fresh_tables[table]
             upgraded_cols = upgraded_tables[table]
-            assert set(fresh_cols) == set(upgraded_cols), (
-                f"{table}: column-set drift "
-                f"only-in-create_all={set(fresh_cols) - set(upgraded_cols)} "
-                f"only-in-alembic={set(upgraded_cols) - set(fresh_cols)}"
-            )
+            assert set(fresh_cols) == set(upgraded_cols), f"{table}: column-set drift only-in-create_all={set(fresh_cols) - set(upgraded_cols)} only-in-alembic={set(upgraded_cols) - set(fresh_cols)}"
             for col_name in sorted(fresh_cols):
                 f_col = fresh_cols[col_name]
                 u_col = upgraded_cols[col_name]
-                assert f_col["nullable"] == u_col["nullable"], (
-                    f"{table}.{col_name}: nullable drift "
-                    f"create_all={f_col['nullable']} alembic={u_col['nullable']}"
-                )
+                assert f_col["nullable"] == u_col["nullable"], f"{table}.{col_name}: nullable drift create_all={f_col['nullable']} alembic={u_col['nullable']}"
                 # Normalize through ``_normalize_default`` to absorb the
                 # dialect-rendering quirks (outer parens, ``::cast``) that
                 # would otherwise cause false positives.
                 f_default = _normalize_default(f_col.get("default"))
                 u_default = _normalize_default(u_col.get("default"))
-                assert f_default == u_default, (
-                    f"{table}.{col_name}: server_default drift "
-                    f"create_all={f_col.get('default')!r} alembic={u_col.get('default')!r}"
-                )
+                assert f_default == u_default, f"{table}.{col_name}: server_default drift create_all={f_col.get('default')!r} alembic={u_col.get('default')!r}"
     finally:
         await fresh.dispose()
         await upgraded.dispose()
@@ -467,11 +444,7 @@ async def test_baseline_table_names_constant_matches_0001(tmp_path: Path) -> Non
         # our schema -- the constant is about DeerFlow-owned baseline tables.
         reflected.discard("alembic_version")
 
-        assert reflected == _BASELINE_TABLE_NAMES, (
-            f"_BASELINE_TABLE_NAMES drifted from 0001_baseline.upgrade()'s output: "
-            f"only-in-0001={sorted(reflected - _BASELINE_TABLE_NAMES)} "
-            f"only-in-constant={sorted(_BASELINE_TABLE_NAMES - reflected)}"
-        )
+        assert reflected == _BASELINE_TABLE_NAMES, f"_BASELINE_TABLE_NAMES drifted from 0001_baseline.upgrade()'s output: only-in-0001={sorted(reflected - _BASELINE_TABLE_NAMES)} only-in-constant={sorted(_BASELINE_TABLE_NAMES - reflected)}"
     finally:
         await engine.dispose()
 
@@ -499,10 +472,7 @@ async def test_legacy_backfill_skips_non_baseline_tables(tmp_path: Path) -> None
             async with engine.connect() as conn:
                 tables = await conn.run_sync(lambda c: set(sa.inspect(c).get_table_names()))
 
-            assert phantom_name not in tables, (
-                f"legacy backfill leaked {phantom_name!r}; a future "
-                f"``op.create_table({phantom_name!r})`` revision would now collide"
-            )
+            assert phantom_name not in tables, f"legacy backfill leaked {phantom_name!r}; a future ``op.create_table({phantom_name!r})`` revision would now collide"
             # Sanity: baseline tables ARE created by the backfill helper.
             assert "runs" in tables
             assert "channel_connections" in tables
