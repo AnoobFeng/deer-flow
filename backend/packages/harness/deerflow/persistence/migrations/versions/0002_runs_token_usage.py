@@ -13,22 +13,17 @@ Schema parity with ``Base.metadata``
 ------------------------------------
 
 The ORM model declares the column as ``Mapped[dict] = mapped_column(JSON,
-default=dict)`` -- non-Optional, so SQLAlchemy infers ``nullable=False``.
-``Base.metadata.create_all`` (the empty-DB bootstrap path) therefore produces
-``token_usage_by_model JSON NOT NULL`` on fresh databases.
+default=dict, server_default=text("'{}'"))`` -- non-Optional, so SQLAlchemy
+infers ``nullable=False``. ``Base.metadata.create_all`` (the empty-DB
+bootstrap path) therefore produces ``token_usage_by_model JSON NOT NULL
+DEFAULT '{}'`` on fresh databases.
 
 To keep legacy-upgraded databases schema-identical to fresh ones, this
-migration also adds the column as ``NOT NULL``. That requires a value for the
-existing rows, so we pair it with ``server_default='{}'`` -- the same JSON
-empty-object the ORM's Python-side ``default=dict`` produces for new inserts.
-Without the server default, ``ALTER TABLE runs ADD COLUMN ... NOT NULL`` would
-fail on any DB that already has ``runs`` rows.
-
-The model itself does not declare a ``server_default`` because the ORM always
-supplies the Python default on insert, but having one at the DB level is
-harmless and gives raw-SQL inserts a safe fallback. Autogenerate does not
-compare server defaults by default, so this small surplus does not surface as
-drift in future ``alembic revision --autogenerate`` runs.
+migration adds the column with the same ``nullable=False`` and
+``server_default='{}'``. The server default is also what lets
+``ALTER TABLE runs ADD COLUMN ... NOT NULL`` succeed on a populated table:
+existing rows pick up the empty-object default at ALTER time instead of
+triggering ``NOT NULL`` violations.
 
 Idempotency
 -----------

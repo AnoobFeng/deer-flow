@@ -16,21 +16,30 @@ Three-branch decision (see ``_decide_state``)
 | DB state                              | Action                                  |
 |---------------------------------------|-----------------------------------------|
 | empty (no DeerFlow tables)            | ``create_all`` + ``alembic stamp head`` |
-| legacy (DeerFlow tables, no alembic)  | ``stamp 0001_baseline`` + ``upgrade head`` |
+| legacy (DeerFlow tables, no alembic)  | ``create_all`` (baseline tables only, as backfill) + ``stamp 0001_baseline`` + ``upgrade head`` |
 | versioned (``alembic_version`` row)   | ``alembic upgrade head``                |
 
-The legacy branch handles pre-alembic databases that already have the baseline
-application tables -- whether they were created before PR #3658 (no
-``token_usage_by_model`` column), after #3658 via ``create_all`` (column
-already there), or by a user who ran the manual ``ALTER`` from the issue. It
-does not repair very old or hand-edited DBs that are missing tables from the
-baseline itself. Distinguishing post-baseline sub-cases at the bootstrap layer
-would force bootstrap to know about every column ever added, which is the
-design smell this module avoids. Instead, each ``versions/*.py`` revision uses
-the idempotent helpers in ``migrations/_helpers.py`` for column changes so
-re-applying a revision against a DB that already has the change is a silent
-no-op. Future schema additions therefore plug in by writing a new revision
-file -- **no edit to this module is required**.
+The legacy branch handles pre-alembic databases that already have at least one
+DeerFlow-owned table. ``create_all`` runs first because stamping at
+``0001_baseline`` makes alembic skip the baseline's own ``create_table`` DDL on
+the subsequent upgrade -- so any baseline table introduced into
+``Base.metadata`` after the user's DB was first provisioned (e.g. the
+``channel_*`` tables from PR #1930 for users upgrading across multiple
+releases) would otherwise never be created, and the first request hitting that
+table would 500 with ``no such table``. The backfill is **restricted to
+``_BASELINE_TABLE_NAMES``** so it does not also create tables that future
+revisions introduce -- those revisions' own ``op.create_table`` would then
+fail with ``relation already exists``. A guard test pins the restriction
+set against ``0001_baseline.upgrade()``'s actual output.
+
+Column-level shape (the pre-#3658 vs post-#3658 vs manual-ALTER cases for
+``token_usage_by_model``) is answered by each ``versions/*.py`` revision via
+the idempotent helpers in ``migrations/_helpers.py`` (``safe_add_column``
+no-ops when the column is already present and ``logger.warning``s on
+shape drift). Future schema additions therefore plug in by writing a new
+revision file -- **no edit to this module is required** *unless* the new
+revision creates a new baseline table, in which case ``_BASELINE_TABLE_NAMES``
+must be updated to match (the guard test fires otherwise).
 
 Concurrency safety
 ------------------
@@ -70,6 +79,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -103,20 +113,53 @@ _BASELINE_REVISION = "0001_baseline"
 _PG_LOCK_KEY = 0x0DEE_12F1_0BEE_3682
 
 
+# Tables created by ``0001_baseline.upgrade()``. The legacy branch restricts
+# its ``create_all`` backfill to this set so it does NOT pre-empt later
+# ``op.create_table`` revisions for models added after baseline -- those
+# revisions would otherwise fail with ``relation already exists`` if
+# ``create_all`` had created their table first. (Column revisions are
+# already safe via the idempotent helpers in ``migrations/_helpers.py``;
+# there is no analogous ``safe_create_table`` yet, so we keep table-level
+# safety at this layer instead of pushing it onto every future revision.)
+#
+# ``test_baseline_table_names_constant_matches_0001`` pins this set against
+# what 0001 actually creates -- editing 0001 without updating this constant
+# (or vice versa) fires that test.
+_BASELINE_TABLE_NAMES: frozenset[str] = frozenset({
+    "channel_connections",
+    "channel_conversations",
+    "channel_credentials",
+    "channel_oauth_states",
+    "feedback",
+    "run_events",
+    "runs",
+    "threads_meta",
+    "users",
+})
+
+
 # Per-engine SQLite bootstrap locks. Per-engine (not module-global) so each
 # engine instance pairs with a lock bound to the event loop that uses that
 # engine -- necessary because ``asyncio.Lock`` binds to the first loop it sees,
 # and pytest gives each async test its own loop. Production uses one engine
 # per process so this dict collapses to a single entry in practice.
-_SQLITE_LOCKS: dict[int, asyncio.Lock] = {}
+#
+# Keyed by the engine object itself via ``WeakKeyDictionary`` rather than
+# ``id(engine)``: CPython recycles addresses after GC, so a stale ``id`` →
+# ``Lock`` entry from a dead engine could be returned to a new engine that
+# happened to land on the same address. The returned lock would still be bound
+# to the dead engine's event loop and ``async with`` would raise
+# ``RuntimeError: ... bound to a different event loop``. Hashing the engine
+# itself also drops entries automatically when the engine is collected, so this
+# dict never grows past the live engine count.
+_SQLITE_LOCKS: weakref.WeakKeyDictionary[AsyncEngine, asyncio.Lock] = weakref.WeakKeyDictionary()
 
 
 def _get_sqlite_local_lock(engine: AsyncEngine) -> asyncio.Lock:
-    key = id(engine)
-    lock = _SQLITE_LOCKS.get(key)
+    lock = _SQLITE_LOCKS.get(engine)
     if lock is None:
         lock = asyncio.Lock()
-        _SQLITE_LOCKS[key] = lock
+        _SQLITE_LOCKS[engine] = lock
     return lock
 
 
@@ -224,6 +267,30 @@ def _run_create_all_sync(sync_conn: Any) -> None:
     Base.metadata.create_all(sync_conn)
 
 
+def _run_baseline_create_all_sync(sync_conn: Any) -> None:
+    """Create only the baseline tables on *sync_conn* (idempotent via checkfirst).
+
+    Used by the legacy branch to backfill baseline-era tables missing from
+    the user's DB. Restricting the table list to ``_BASELINE_TABLE_NAMES``
+    is the safety property: an unrestricted ``create_all`` would also create
+    tables introduced by later revisions, which would then collide with
+    those revisions' ``op.create_table`` calls when alembic ran upgrade.
+    """
+    from deerflow.persistence.base import Base
+
+    try:
+        import deerflow.persistence.models  # noqa: F401
+    except ImportError:
+        logger.debug("deerflow.persistence.models not found; baseline backfill may be incomplete")
+
+    baseline_tables = [
+        Base.metadata.tables[name]
+        for name in _BASELINE_TABLE_NAMES
+        if name in Base.metadata.tables
+    ]
+    Base.metadata.create_all(sync_conn, tables=baseline_tables, checkfirst=True)
+
+
 def _stamp(cfg: AlembicConfig, revision: str) -> None:
     """Synchronous alembic stamp; callers must wrap in ``asyncio.to_thread``."""
     alembic_command.stamp(cfg, revision)
@@ -247,8 +314,29 @@ async def _postgres_lock(engine: AsyncEngine):
     transactions opened by alembic during ``stamp`` / ``upgrade``. The lock
     is released explicitly on the way out and -- as a safety net -- when the
     backing session disconnects (process crash, kill -9).
+
+    Idle-in-transaction protection
+    ------------------------------
+
+    ``engine.connect()`` auto-begins a transaction on the first ``execute``,
+    and this connection then sits idle while ``asyncio.to_thread(_upgrade,
+    ...)`` runs alembic on a *different* pooled connection. Managed Postgres
+    (RDS, Cloud SQL, Supabase) ships with ``idle_in_transaction_session_
+    timeout`` set to 1-10 minutes by default; if alembic takes longer than
+    that, the host kills this idle-in-transaction session, and because
+    advisory locks are session-scoped, the lock is **silently released**.
+    A second Gateway then acquires it and runs DDL concurrently with the
+    first -- defeating the whole purpose of the lock.
+
+    Defence: ``SET LOCAL idle_in_transaction_session_timeout = 0`` disables
+    the kill **for this transaction only** (no global / role-level effect).
+    Self-hosted Postgres usually ships with the timeout off, so this is a
+    no-op there; on managed PG it is what keeps the lock alive while DDL
+    runs. Must execute *before* ``pg_advisory_lock`` so a slow lock acquire
+    on a heavily-contended cluster is itself protected.
     """
     async with engine.connect() as conn:
+        await conn.execute(text("SET LOCAL idle_in_transaction_session_timeout = 0"))
         await conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": _PG_LOCK_KEY})
         try:
             logger.info("bootstrap: acquired postgres advisory lock key=0x%x", _PG_LOCK_KEY)
@@ -326,10 +414,22 @@ async def bootstrap_schema(engine: AsyncEngine, *, backend: str) -> None:
 
         elif decision == "legacy":
             logger.info(
-                "bootstrap: branch=legacy -> stamp %s + upgrade head (%s)",
+                "bootstrap: branch=legacy -> create_all (backfill missing baseline tables) + stamp %s + upgrade head (%s)",
                 _BASELINE_REVISION,
                 head,
             )
+            # ``_run_baseline_create_all_sync`` is restricted to
+            # ``_BASELINE_TABLE_NAMES`` -- a plain ``Base.metadata.create_all``
+            # would also create tables introduced by later revisions and
+            # collide with their ``op.create_table`` on the subsequent
+            # upgrade. With the restriction, missing baseline tables are
+            # backfilled and post-baseline ``create_table`` revisions run
+            # against a DB where their tables genuinely do not yet exist.
+            # The post-create_all column-add revisions still no-op via
+            # ``safe_add_column`` because baseline-era tables now have the
+            # columns those revisions would add.
+            async with engine.begin() as conn:
+                await conn.run_sync(_run_baseline_create_all_sync)
             await asyncio.to_thread(_stamp, cfg, _BASELINE_REVISION)
             await asyncio.to_thread(_upgrade, cfg, "head")
 

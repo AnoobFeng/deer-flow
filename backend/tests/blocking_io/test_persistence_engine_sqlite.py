@@ -14,7 +14,7 @@ directly on the event loop, Blockbuster raises `BlockingError` and this fails.
 
 We also stub ``bootstrap_schema`` so the alembic stamp/upgrade path -- which has
 its own ``asyncio.to_thread`` regression anchor in
-``test_persistence_bootstrap_alembic.py`` -- does not turn this test into a
+``test_persistence_bootstrap.py`` -- does not turn this test into a
 double-coverage one. Keeping concerns separated means a regression in either
 offload (makedirs vs alembic) points at the right place.
 """

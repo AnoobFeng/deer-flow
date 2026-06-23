@@ -5,21 +5,23 @@ Covers the three-branch decision table:
 | DB state                              | Action                                  |
 |---------------------------------------|-----------------------------------------|
 | empty                                 | create_all + stamp head                 |
-| legacy (DeerFlow tables, no alembic_version) | stamp baseline + upgrade head    |
+| legacy (DeerFlow tables, no alembic_version) | create_all (baseline tables only, backfill) + stamp baseline + upgrade head |
 | versioned                             | upgrade head                            |
 
 Each test seeds a temp SQLite to the relevant pre-state, runs
 ``bootstrap_schema``, and asserts both the resulting schema and the
 ``alembic_version`` row.
 
-The legacy branch is exercised twice — once with the new column missing
-(branch 2) and once with it already present (branch 3 in the seed sense, but
-the same code path) — to prove the idempotent revision helpers handle both
-sub-cases without bootstrap needing to know about a specific column.
+The legacy branch is exercised across three scenarios: token-usage column
+missing, token-usage column already present, and a baseline-era table
+missing entirely (the ``channel_*`` backfill case). The first two prove the
+column-level idempotent helpers handle both sub-cases; the third proves the
+table-level backfill works.
 """
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -30,10 +32,15 @@ from sqlalchemy.ext.asyncio import create_async_engine
 import deerflow.persistence.models  # noqa: F401
 from deerflow.persistence.base import Base
 from deerflow.persistence.bootstrap import (
+    _BASELINE_TABLE_NAMES,
     _decide_state,
+    _get_alembic_config,
     _get_head_revision,
+    _run_baseline_create_all_sync,
+    _upgrade,
     bootstrap_schema,
 )
+from deerflow.persistence.migrations._helpers import _normalize_default
 
 # Mark only async tests via the decorator below; module-level pytestmark would
 # spuriously warn for the sync ``TestDecideState`` cases.
@@ -88,6 +95,27 @@ async def _seed_legacy_with_column(engine) -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
+async def _seed_legacy_missing_channel_tables(engine) -> None:
+    """Build a pre-#1930 schema: baseline tables exist but ``channel_*`` do not.
+
+    Models the worst-case legacy DB the bootstrap layer has to repair -- a
+    user who upgraded across multiple releases and never had the channel_*
+    tables provisioned in the first place. We achieve it by running the full
+    ``create_all`` and then dropping the channel_* tables in FK-dependency
+    order (credentials/conversations reference channel_connections).
+    """
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with engine.begin() as conn:
+        for table in (
+            "channel_credentials",
+            "channel_conversations",
+            "channel_oauth_states",
+            "channel_connections",
+        ):
+            await conn.execute(sa.text(f"DROP TABLE IF EXISTS {table}"))
+
+
 # ---------------------------------------------------------------------------
 # Branch 1: empty DB
 # ---------------------------------------------------------------------------
@@ -140,6 +168,49 @@ async def test_legacy_without_column_branch_upgrades(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Legacy backfill: a DB that pre-dates a later-added baseline table (e.g. the
+# ``channel_*`` tables from PR #1930) must end up with all baseline tables
+# after bootstrap, otherwise the channels API 500s with ``no such table``.
+# The fix runs ``create_all`` (idempotent) before ``stamp 0001_baseline`` so
+# missing baseline tables are backfilled with their current ORM schema.
+# ---------------------------------------------------------------------------
+
+
+@asyncio_test
+async def test_legacy_missing_channel_tables_get_backfilled(tmp_path: Path) -> None:
+    engine = create_async_engine(_url(tmp_path))
+    try:
+        await _seed_legacy_missing_channel_tables(engine)
+        tables = await _table_names(engine)
+        # Sanity-check the seeded pre-state: ``runs`` triggers the legacy
+        # branch (has_deerflow_tables=True, no alembic_version) while the
+        # channel_* tables are absent.
+        assert "runs" in tables
+        assert "alembic_version" not in tables
+        for missing in {
+            "channel_connections",
+            "channel_credentials",
+            "channel_conversations",
+            "channel_oauth_states",
+        }:
+            assert missing not in tables, f"seed should not have {missing}"
+
+        await bootstrap_schema(engine, backend="sqlite")
+
+        tables = await _table_names(engine)
+        for required in {
+            "channel_connections",
+            "channel_credentials",
+            "channel_conversations",
+            "channel_oauth_states",
+        }:
+            assert required in tables, f"legacy backfill missed: {required}"
+        assert await _alembic_version(engine) == HEAD
+    finally:
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
 # Branch 3: legacy DB that ALREADY has the column (post-#3658 create_all,
 # or user-applied manual ALTER). The branch is the same as the
 # legacy-without-column case -- bootstrap stamps baseline and tries to
@@ -162,6 +233,50 @@ async def test_legacy_with_column_branch_upgrade_is_idempotent(tmp_path: Path) -
         cols_after = await _runs_columns(engine)
         assert cols_after == cols_before, "idempotent upgrade should not alter schema"
         assert await _alembic_version(engine) == HEAD
+    finally:
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Drift-warning guard: a column re-added by a manual ALTER (e.g. the #3682
+# workaround) survives the legacy branch because ``safe_add_column`` is
+# name-keyed, but the helper must ``logger.warning`` so the operator notices
+# the residual nullability / server_default drift from the model.
+# ---------------------------------------------------------------------------
+
+
+@asyncio_test
+async def test_legacy_with_manual_workaround_column_warns_on_drift(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    engine = create_async_engine(_url(tmp_path))
+    try:
+        # Pre-#3658 schema with a workaround-style re-add: nullable JSON,
+        # no server default -- diverges from the model's NOT NULL DEFAULT '{}'.
+        await _seed_legacy_without_column(engine)
+        async with engine.begin() as conn:
+            await conn.execute(sa.text("ALTER TABLE runs ADD COLUMN token_usage_by_model JSON"))
+
+        with caplog.at_level("WARNING", logger="deerflow.persistence.migrations._helpers"):
+            await bootstrap_schema(engine, backend="sqlite")
+
+        # Bootstrap still completes -- the helper does not block on drift.
+        assert await _alembic_version(engine) == HEAD
+        # And the manually-added column survives untouched (no auto-repair).
+        col = await _runs_column_meta(engine, "token_usage_by_model")
+        assert col["nullable"] is True
+
+        drift_warnings = [
+            r
+            for r in caplog.records
+            if r.levelname == "WARNING"
+            and r.name == "deerflow.persistence.migrations._helpers"
+            and "safe_add_column" in r.getMessage()
+            and "token_usage_by_model" in r.getMessage()
+        ]
+        assert drift_warnings, "expected safe_add_column to warn about the drifted column"
+        assert "nullable" in drift_warnings[0].getMessage()
     finally:
         await engine.dispose()
 
@@ -209,16 +324,192 @@ async def test_token_usage_column_parity_between_fresh_and_upgraded(tmp_path: Pa
         await bootstrap_schema(upgraded, backend="sqlite")
         upgraded_col = await _runs_column_meta(upgraded, "token_usage_by_model")
 
-        # Pin the contract: the column must have the same nullability after
-        # either bootstrap path. If 0002 ever drifts from the model's
-        # ``Mapped[dict]`` (i.e. ``nullable=False``), this fires.
+        # Pin the contract: the column must have the same nullability AND
+        # server_default after either bootstrap path. If 0002 ever drifts
+        # from the model's ``Mapped[dict] = mapped_column(JSON, default=dict,
+        # server_default=text("'{}'"))`` (i.e. ``nullable=False`` plus the
+        # ``'{}'`` DB-side default), this fires.
         assert fresh_col["nullable"] == upgraded_col["nullable"], f"nullability drift: fresh={fresh_col['nullable']} upgraded={upgraded_col['nullable']}"
         # The model declares Mapped[dict] (non-optional) -> NOT NULL.
         assert fresh_col["nullable"] is False
         assert upgraded_col["nullable"] is False
+        # Normalize through the same helper the drift warning uses so dialect
+        # quirks (outer parens, ``::cast``) do not cause false negatives.
+        assert _normalize_default(fresh_col.get("default")) == _normalize_default(upgraded_col.get("default")), (
+            f"server_default drift: fresh={fresh_col.get('default')!r} upgraded={upgraded_col.get('default')!r}"
+        )
     finally:
         await fresh.dispose()
         await upgraded.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Full schema parity: ``Base.metadata.create_all`` and ``alembic upgrade
+# base->head`` MUST produce structurally identical schemas. Both are
+# independent sources of the same schema in this codebase -- fresh DBs are
+# provisioned by the former (empty branch), historical/upgraded DBs by the
+# latter (versioned branch and the alembic tail of the legacy branch). If
+# they diverge, two users running the same app version end up with different
+# DB structures: exactly the cross-deployment drift this PR exists to kill.
+#
+# The check is intentionally scoped to columns × (nullable, server_default)
+# instead of full type/index/FK reflection. Those are the two highest-signal
+# attributes for the drift modes seen so far (#3682 was a nullability
+# mismatch; review todo #6 was a server_default mismatch). Type, index, and
+# FK reflection differ enough across dialects to require careful
+# normalization helpers that aren't worth introducing for this PR's scope;
+# see review todo #7 for the wider plan.
+# ---------------------------------------------------------------------------
+
+
+def _reflect_columns_sync(sync_conn) -> dict[str, dict[str, dict]]:
+    insp = sa.inspect(sync_conn)
+    out: dict[str, dict[str, dict]] = {}
+    for table in insp.get_table_names():
+        # ``alembic_version`` is alembic's own bookkeeping table, not part of
+        # our schema -- one path creates it (upgrade) and the other doesn't
+        # (create_all), so comparing it would produce a guaranteed false
+        # positive every run.
+        if table == "alembic_version":
+            continue
+        out[table] = {c["name"]: c for c in insp.get_columns(table)}
+    return out
+
+
+async def _reflect_columns(engine) -> dict[str, dict[str, dict]]:
+    async with engine.connect() as conn:
+        return await conn.run_sync(_reflect_columns_sync)
+
+
+@asyncio_test
+async def test_create_all_and_alembic_upgrade_produce_same_schema(tmp_path: Path) -> None:
+    fresh = create_async_engine(_url(tmp_path, "fresh.db"))
+    upgraded = create_async_engine(_url(tmp_path, "upgraded.db"))
+    try:
+        # Path A: ``Base.metadata.create_all`` -- the empty-branch code path.
+        async with fresh.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        # Path B: pure alembic ``upgrade base->head``. Note we deliberately
+        # bypass ``bootstrap_schema`` on this side -- its empty branch uses
+        # ``create_all``, not the alembic chain -- to exercise the path a
+        # versioned-DB upgrade actually takes.
+        cfg = _get_alembic_config(upgraded)
+        await asyncio.to_thread(_upgrade, cfg, "head")
+
+        fresh_tables = await _reflect_columns(fresh)
+        upgraded_tables = await _reflect_columns(upgraded)
+
+        # Same set of tables. A mismatch here means either ``Base.metadata``
+        # has gained/lost a table without a matching revision, or a revision
+        # creates/drops a table without a matching model change.
+        assert set(fresh_tables) == set(upgraded_tables), (
+            f"table-set drift between create_all and alembic upgrade: "
+            f"only-in-create_all={set(fresh_tables) - set(upgraded_tables)} "
+            f"only-in-alembic={set(upgraded_tables) - set(fresh_tables)}"
+        )
+
+        for table in sorted(fresh_tables):
+            fresh_cols = fresh_tables[table]
+            upgraded_cols = upgraded_tables[table]
+            assert set(fresh_cols) == set(upgraded_cols), (
+                f"{table}: column-set drift "
+                f"only-in-create_all={set(fresh_cols) - set(upgraded_cols)} "
+                f"only-in-alembic={set(upgraded_cols) - set(fresh_cols)}"
+            )
+            for col_name in sorted(fresh_cols):
+                f_col = fresh_cols[col_name]
+                u_col = upgraded_cols[col_name]
+                assert f_col["nullable"] == u_col["nullable"], (
+                    f"{table}.{col_name}: nullable drift "
+                    f"create_all={f_col['nullable']} alembic={u_col['nullable']}"
+                )
+                # Normalize through ``_normalize_default`` to absorb the
+                # dialect-rendering quirks (outer parens, ``::cast``) that
+                # would otherwise cause false positives.
+                f_default = _normalize_default(f_col.get("default"))
+                u_default = _normalize_default(u_col.get("default"))
+                assert f_default == u_default, (
+                    f"{table}.{col_name}: server_default drift "
+                    f"create_all={f_col.get('default')!r} alembic={u_col.get('default')!r}"
+                )
+    finally:
+        await fresh.dispose()
+        await upgraded.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Baseline-table-restriction guards. The legacy branch's backfill must
+# create *only* the baseline-era tables, not the full ``Base.metadata``.
+# Otherwise it would pre-empt a future ``op.create_table`` revision for a
+# newly-added model (the revision would crash with ``relation already
+# exists``). Two tests cover this:
+#
+# 1. ``_BASELINE_TABLE_NAMES`` is pinned against what ``0001_baseline``
+#    actually creates -- editing 0001 without updating the constant fires
+#    here, forcing the developer to keep the two in sync.
+# 2. Regression for the leak itself: a phantom table outside the constant
+#    must NOT be created by the backfill helper.
+# ---------------------------------------------------------------------------
+
+
+@asyncio_test
+async def test_baseline_table_names_constant_matches_0001(tmp_path: Path) -> None:
+    engine = create_async_engine(_url(tmp_path))
+    try:
+        cfg = _get_alembic_config(engine)
+        # Run only up to baseline (not head) and reflect what it produced.
+        await asyncio.to_thread(_upgrade, cfg, BASELINE)
+
+        async with engine.connect() as conn:
+            reflected = await conn.run_sync(lambda c: set(sa.inspect(c).get_table_names()))
+        # ``alembic_version`` is alembic's bookkeeping table, not part of
+        # our schema -- the constant is about DeerFlow-owned baseline tables.
+        reflected.discard("alembic_version")
+
+        assert reflected == _BASELINE_TABLE_NAMES, (
+            f"_BASELINE_TABLE_NAMES drifted from 0001_baseline.upgrade()'s output: "
+            f"only-in-0001={sorted(reflected - _BASELINE_TABLE_NAMES)} "
+            f"only-in-constant={sorted(_BASELINE_TABLE_NAMES - reflected)}"
+        )
+    finally:
+        await engine.dispose()
+
+
+@asyncio_test
+async def test_legacy_backfill_skips_non_baseline_tables(tmp_path: Path) -> None:
+    """Regression: legacy backfill must not create tables outside the baseline
+    set, because a later ``op.create_table`` revision for the same name would
+    fail. We synthesise a phantom table on ``Base.metadata`` (modelling a
+    future model addition), run the backfill helper, and assert the phantom
+    is absent from the resulting DB.
+    """
+    phantom_name = "phantom_future_table_for_test"
+    phantom = sa.Table(
+        phantom_name,
+        Base.metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+    )
+    try:
+        engine = create_async_engine(_url(tmp_path))
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(_run_baseline_create_all_sync)
+
+            async with engine.connect() as conn:
+                tables = await conn.run_sync(lambda c: set(sa.inspect(c).get_table_names()))
+
+            assert phantom_name not in tables, (
+                f"legacy backfill leaked {phantom_name!r}; a future "
+                f"``op.create_table({phantom_name!r})`` revision would now collide"
+            )
+            # Sanity: baseline tables ARE created by the backfill helper.
+            assert "runs" in tables
+            assert "channel_connections" in tables
+        finally:
+            await engine.dispose()
+    finally:
+        Base.metadata.remove(phantom)
 
 
 # ---------------------------------------------------------------------------

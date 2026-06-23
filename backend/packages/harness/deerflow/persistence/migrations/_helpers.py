@@ -15,16 +15,88 @@ Two reasons we need idempotency:
 2. **Same posture that made ``Base.metadata.create_all`` forgiving.**
    ``create_all`` skips existing tables. Column migrations should mirror that
    forgiving behavior by skipping columns already in the desired state.
+
+Drift warning
+-------------
+
+Name-match alone can hide a column that a manual ``ALTER`` (for example the
+#3682 workaround that ran ``ALTER TABLE runs ADD COLUMN token_usage_by_model
+JSON`` without ``NOT NULL DEFAULT '{}'``) left in a shape that diverges from
+what ``Base.metadata.create_all`` would produce on a fresh DB. To surface that
+silent drift, ``safe_add_column`` compares the existing column's
+``nullable`` / ``server_default`` against the desired ``sa.Column`` and emits
+``logger.warning`` on mismatch. We do not auto-repair -- a warning is enough
+for operators to notice and decide.
 """
 
 from __future__ import annotations
 
+import logging
+
 import sqlalchemy as sa
 from alembic import op
+
+logger = logging.getLogger(__name__)
 
 
 def _inspector() -> sa.Inspector:
     return sa.inspect(op.get_bind())
+
+
+def _normalize_default(value: object) -> str | None:
+    """Normalize a server-default value for cross-source comparison.
+
+    The desired value comes from ``sa.Column.server_default`` (a
+    ``DefaultClause`` / ``TextClause`` literal, ``None``, or a Python literal);
+    the reflected value comes from ``Inspector.get_columns()['default']`` as a
+    dialect-rendered string. Strip outer parens / whitespace / Postgres-style
+    type casts so textually-equivalent forms compare equal across dialects.
+    """
+    if value is None:
+        return None
+    if isinstance(value, sa.sql.elements.TextClause):
+        text = value.text
+    elif isinstance(value, sa.schema.DefaultClause) and isinstance(value.arg, sa.sql.elements.TextClause):
+        text = value.arg.text
+    else:
+        text = str(value)
+    text = text.strip()
+    # Strip a single layer of outer parens that some dialects wrap defaults in.
+    if text.startswith("(") and text.endswith(")"):
+        text = text[1:-1].strip()
+    # Strip Postgres-style type casts like ``'{}'::jsonb``.
+    if "::" in text:
+        text = text.split("::", 1)[0].strip()
+    return text or None
+
+
+def _check_column_drift(table: str, desired: sa.Column, actual: dict) -> None:
+    """Warn if an existing column's attributes diverge from the desired model.
+
+    Compares ``nullable`` and ``server_default``. Type comparison is skipped
+    because reflected type repr varies enough across dialects (e.g. ``JSON``
+    vs ``JSONB``) that it would produce too many false positives to act on.
+    """
+    diffs: list[str] = []
+
+    desired_nullable = True if desired.nullable is None else bool(desired.nullable)
+    actual_nullable = bool(actual.get("nullable", True))
+    if desired_nullable != actual_nullable:
+        diffs.append(f"nullable actual={actual_nullable} desired={desired_nullable}")
+
+    desired_default = _normalize_default(desired.server_default)
+    actual_default = _normalize_default(actual.get("default"))
+    if desired_default != actual_default:
+        diffs.append(f"server_default actual={actual_default!r} desired={desired_default!r}")
+
+    if diffs:
+        logger.warning(
+            "safe_add_column: %s.%s already exists but drifts from the model definition (%s); "
+            "leaving as-is -- a manual ALTER may be needed to match the model.",
+            table,
+            desired.name,
+            "; ".join(diffs),
+        )
 
 
 def safe_add_column(table: str, column: sa.Column) -> None:
@@ -32,13 +104,17 @@ def safe_add_column(table: str, column: sa.Column) -> None:
 
     - Missing table => nothing to add to. Skip silently because bootstrap only
       supports legacy DBs that already have the baseline table set.
-    - Column already exists => no-op.
+    - Column already exists => no-op. Before returning, ``_check_column_drift``
+      compares the existing column's nullability / server_default against the
+      desired ``column`` and ``logger.warning``\\ s on mismatch so manually-
+      applied workarounds do not silently survive as latent drift.
     """
     insp = _inspector()
     if table not in insp.get_table_names():
         return
-    existing = {c["name"] for c in insp.get_columns(table)}
+    existing = {c["name"]: c for c in insp.get_columns(table)}
     if column.name in existing:
+        _check_column_drift(table, column, existing[column.name])
         return
     with op.batch_alter_table(table) as batch:
         batch.add_column(column)

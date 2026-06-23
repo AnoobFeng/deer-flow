@@ -6,9 +6,10 @@ mutations.
 
 We model concurrency at the *async-task* level here (multiple coroutines
 inside one process). SQLite is single-node by deployment, so within-process
-serialisation -- which is what ``_SQLITE_LOCAL_LOCK`` provides -- is the
-realistic boundary. Cross-process serialisation falls through to SQLite's own
-write lock + ``PRAGMA busy_timeout`` plus the idempotent revision helpers.
+serialisation -- which is what the per-engine ``_SQLITE_LOCKS`` entry
+provides -- is the realistic boundary. Cross-process serialisation falls
+through to SQLite's own write lock + ``PRAGMA busy_timeout`` plus the
+idempotent revision helpers.
 """
 
 from __future__ import annotations

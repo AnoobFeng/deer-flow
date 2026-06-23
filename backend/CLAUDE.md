@@ -498,10 +498,10 @@ DeerFlow's application tables (`runs`, `threads_meta`, `feedback`, `users`, `run
 | DB state                                  | Action                                  |
 |-------------------------------------------|-----------------------------------------|
 | empty (no DeerFlow tables)                | `create_all` + `alembic stamp head`     |
-| legacy (DeerFlow tables, no `alembic_version`) | `alembic stamp 0001_baseline` + `upgrade head` |
+| legacy (DeerFlow tables, no `alembic_version`) | `create_all` (baseline tables only, backfill) + `alembic stamp 0001_baseline` + `upgrade head` |
 | versioned (`alembic_version` row exists)  | `alembic upgrade head`                  |
 
-The legacy branch handles pre-alembic databases that already have the baseline application tables — pre-#3658 (missing `token_usage_by_model`), post-#3658-via-`create_all` (column already present), or user-applied manual `ALTER`. It does not repair very old or hand-edited DBs that are missing baseline tables themselves. Distinguishing post-baseline sub-cases at the bootstrap layer would force `bootstrap_schema` to know about every column ever added; instead, column migrations use the idempotent helpers in `migrations/_helpers.py` (`safe_add_column` / `safe_drop_column`) to no-op when the change is already present. **Adding a new ORM column / table only requires a new revision file — no edit to `bootstrap.py` is needed.**
+The legacy branch handles pre-alembic databases that already have at least one DeerFlow-owned table. `create_all` runs first because stamping at `0001_baseline` makes alembic skip the baseline's own `create_table` DDL on the subsequent upgrade — so any baseline table introduced into `Base.metadata` after the user's DB was first provisioned (e.g. the `channel_*` tables from PR #1930 for users upgrading across multiple releases) would otherwise never be created, and the first request hitting that table would 500 with `no such table`. The backfill is **restricted to `_BASELINE_TABLE_NAMES`** so it does not also create tables that future revisions introduce — those revisions' own `op.create_table` would otherwise fail with `relation already exists`. A guard test pins `_BASELINE_TABLE_NAMES` against `0001_baseline.upgrade()`'s actual output, so editing 0001 to add or remove a table forces a matching update to the constant. Column-level shape (pre-#3658 vs post-#3658 vs manual-ALTER for `token_usage_by_model`) is answered by each `versions/*.py` revision via the idempotent helpers in `migrations/_helpers.py` (`safe_add_column` / `safe_drop_column`) which no-op when the change is already present and `logger.warning` on shape drift. **Adding a new ORM column / table only requires a new revision file — no edit to `bootstrap.py` is needed** *unless* the new revision adds a new baseline table (rare; only happens when a new model is part of the baseline rather than introduced by its own revision).
 
 The empty-DB path keeps using `create_all` because `Base.metadata` is the only authoritative schema source — `create_all` renders both SQLite (JSON, type affinity) and Postgres (JSONB, partial indexes) correctly without anyone having to keep a hand-written baseline in lockstep. `0001_baseline.upgrade()` is therefore almost never executed in practice; it exists as a stamp target + chain root.
 
@@ -519,7 +519,7 @@ This invokes `alembic revision --autogenerate` against the live ORM models. Revi
 - `migrations/_helpers.py` — `safe_add_column` / `safe_drop_column`
 - `migrations/versions/0001_baseline.py` — chain root, matches the schema `create_all` produces from `Base.metadata`
 - `migrations/versions/0002_runs_token_usage.py` — fixes issue #3682
-- `persistence/bootstrap.py` — `bootstrap_schema(engine, backend=...)`, the four-branch decision + locking
+- `persistence/bootstrap.py` — `bootstrap_schema(engine, backend=...)`, the three-branch decision + locking
 - Tests: `tests/test_persistence_bootstrap.py` (branches), `tests/test_persistence_bootstrap_concurrency.py` (concurrency), `tests/test_persistence_bootstrap_regression.py` (issue #3682), `tests/test_persistence_migrations_env.py` (filter), `tests/blocking_io/test_persistence_bootstrap.py` (asyncio.to_thread anchor)
 
 ### Tracing System (`packages/harness/deerflow/tracing/`)

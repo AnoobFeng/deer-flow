@@ -155,7 +155,7 @@ def upgrade() -> None:
         sa.Column("lead_agent_tokens", sa.Integer(), nullable=False),
         sa.Column("subagent_tokens", sa.Integer(), nullable=False),
         sa.Column("middleware_tokens", sa.Integer(), nullable=False),
-        sa.Column("token_usage_by_model", sa.JSON(), nullable=False),
+        sa.Column("token_usage_by_model", sa.JSON(), nullable=False, server_default=sa.text("'{}'")),
         sa.Column("follow_up_to_run_id", sa.String(length=64), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),

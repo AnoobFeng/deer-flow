@@ -145,7 +145,7 @@ async def init_engine(
 
     # Schema bootstrap (hybrid):
     #   - empty DB        -> create_all + alembic stamp head
-    #   - legacy DB       -> alembic stamp baseline + upgrade head
+    #   - legacy DB       -> create_all (baseline tables only, backfill) + alembic stamp baseline + upgrade head
     #   - already managed -> alembic upgrade head
     # Concurrency: Postgres advisory lock (true cross-process); SQLite uses an
     # in-process asyncio.Lock plus a 30s PRAGMA busy_timeout (also set on
