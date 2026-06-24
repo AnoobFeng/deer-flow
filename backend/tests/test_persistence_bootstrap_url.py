@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 from sqlalchemy.engine.url import make_url
 
-from deerflow.persistence.bootstrap import _alembic_safe_url, _get_alembic_config
+from deerflow.persistence.bootstrap import _alembic_safe_url, _escape_url_for_alembic, _get_alembic_config
 
 
 def _fake_engine(url: str) -> SimpleNamespace:
@@ -58,3 +58,14 @@ def test_sqlite_url_does_not_double_percent_unnecessarily() -> None:
     engine = _fake_engine("sqlite+aiosqlite:///tmp/db.sqlite")
     safe = _alembic_safe_url(engine)
     assert safe == "sqlite+aiosqlite:///tmp/db.sqlite"
+
+
+def test_escape_url_for_alembic_doubles_only_percent_signs() -> None:
+    # Shared helper used by both ``bootstrap._alembic_safe_url`` and
+    # ``scripts/_autogen_revision._alembic_config`` -- pins the round-trip
+    # rule so any future URL/ConfigParser corner case is fixed in one place.
+    assert _escape_url_for_alembic("postgresql://a:p%40ss@h/d") == "postgresql://a:p%%40ss@h/d"
+    assert _escape_url_for_alembic("sqlite:///x.db") == "sqlite:///x.db"
+    # Idempotency is intentionally NOT a property -- doubling is one-way;
+    # callers must escape exactly once on the way into set_main_option.
+    assert _escape_url_for_alembic("a%%b") == "a%%%%b"

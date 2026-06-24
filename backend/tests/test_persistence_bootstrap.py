@@ -241,7 +241,11 @@ async def test_legacy_with_column_branch_upgrade_is_idempotent(tmp_path: Path) -
 # Drift-warning guard: a column re-added by a manual ALTER (e.g. the #3682
 # workaround) survives the legacy branch because ``safe_add_column`` is
 # name-keyed, but the helper must ``logger.warning`` so the operator notices
-# the residual nullability / server_default drift from the model.
+# the residual nullability / server_default / type drift from the model.
+# Two scenarios are pinned: (1) nullable JSON workaround -- nullability +
+# server_default drift fire, type matches; (2) ``TEXT NOT NULL DEFAULT
+# '{}'`` workaround -- only type drifts, must STILL fire thanks to the
+# JSON/TEXT family check in ``_type_equivalent``.
 # ---------------------------------------------------------------------------
 
 
@@ -254,6 +258,8 @@ async def test_legacy_with_manual_workaround_column_warns_on_drift(
     try:
         # Pre-#3658 schema with a workaround-style re-add: nullable JSON,
         # no server default -- diverges from the model's NOT NULL DEFAULT '{}'.
+        # Type matches (JSON vs JSON) so the type-equivalence check stays quiet
+        # and the warning fires purely on nullability + server_default.
         await _seed_legacy_without_column(engine)
         async with engine.begin() as conn:
             await conn.execute(sa.text("ALTER TABLE runs ADD COLUMN token_usage_by_model JSON"))
@@ -269,9 +275,101 @@ async def test_legacy_with_manual_workaround_column_warns_on_drift(
 
         drift_warnings = [r for r in caplog.records if r.levelname == "WARNING" and r.name == "deerflow.persistence.migrations._helpers" and "safe_add_column" in r.getMessage() and "token_usage_by_model" in r.getMessage()]
         assert drift_warnings, "expected safe_add_column to warn about the drifted column"
-        assert "nullable" in drift_warnings[0].getMessage()
+        msg = drift_warnings[0].getMessage()
+        assert "nullable" in msg
+        assert "server_default" in msg
+        # Type info is always echoed in the payload for triage context.
+        assert "actual_type=" in msg and "desired_type=" in msg, f"warning missing type info: {msg!r}"
+        # JSON ≈ JSON, so the equivalence check must NOT produce a "type" diff
+        # entry here -- that would be a false positive on the matching-type case.
+        assert "type actual=" not in msg, f"unexpected type drift on matching JSON column: {msg!r}"
     finally:
         await engine.dispose()
+
+
+@asyncio_test
+async def test_legacy_with_wrong_type_workaround_warns_on_type_drift(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The precise reviewer scenario: nullability + server_default match the
+    model, only the type is wrong. Pre-family-check, this returned zero
+    warning (silent JSON-vs-TEXT drift). The family check in
+    ``_type_equivalent`` must catch this while leaving JSON/JSONB pairs
+    equivalent so Postgres dialect synonyms don't false-positive."""
+    engine = create_async_engine(_url(tmp_path))
+    try:
+        # Reviewer's exact workaround: right nullability/default, wrong type.
+        await _seed_legacy_without_column(engine)
+        async with engine.begin() as conn:
+            await conn.execute(sa.text("ALTER TABLE runs ADD COLUMN token_usage_by_model TEXT NOT NULL DEFAULT '{}'"))
+
+        with caplog.at_level("WARNING", logger="deerflow.persistence.migrations._helpers"):
+            await bootstrap_schema(engine, backend="sqlite")
+
+        assert await _alembic_version(engine) == HEAD
+        # No auto-repair: the TEXT column survives unchanged so the operator
+        # can decide whether to ALTER it themselves.
+        col = await _runs_column_meta(engine, "token_usage_by_model")
+        assert col["nullable"] is False
+
+        drift_warnings = [r for r in caplog.records if r.levelname == "WARNING" and r.name == "deerflow.persistence.migrations._helpers" and "safe_add_column" in r.getMessage() and "token_usage_by_model" in r.getMessage()]
+        assert drift_warnings, "expected safe_add_column to warn about pure type drift (was silent before the family check)"
+        msg = drift_warnings[0].getMessage()
+        # The drift entry must explicitly name the type mismatch -- this is
+        # what was missing before the family check existed.
+        assert "type actual=" in msg and "desired=" in msg, f"warning missing type drift entry: {msg!r}"
+        assert "TEXT" in msg and "JSON" in msg, f"warning missing TEXT/JSON in payload: {msg!r}"
+        # Nullability + server_default match the model -- no other diffs.
+        assert "nullable" not in msg, f"unexpected nullability drift on matching column: {msg!r}"
+        assert "server_default" not in msg, f"unexpected server_default drift on matching column: {msg!r}"
+    finally:
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# _type_equivalent unit tests: pin the JSON/JSONB equivalence so Postgres
+# dialect synonyms stay quiet, and pin the TEXT/JSON divergence so the
+# reviewer's wrong-type scenario keeps firing.
+# ---------------------------------------------------------------------------
+
+
+def test_type_equivalent_matches_known_dialect_synonyms() -> None:
+    from deerflow.persistence.migrations._helpers import _type_equivalent
+
+    # JSON ↔ JSONB (Postgres dialect difference, operationally interchangeable
+    # for our schema). Both directions, and via raw strings.
+    assert _type_equivalent(sa.JSON(), "JSONB()") is True
+    assert _type_equivalent("JSON", "JSONB") is True
+    assert _type_equivalent("JSONB", "JSON") is True
+
+
+def test_type_equivalent_catches_wholesale_type_mismatch() -> None:
+    from deerflow.persistence.migrations._helpers import _type_equivalent
+
+    # The reviewer scenario: TEXT NOT NULL DEFAULT '{}' workaround.
+    assert _type_equivalent("TEXT", "JSON") is False
+    assert _type_equivalent("TEXT", "JSONB") is False
+    # Unrelated families also don't accidentally pair up.
+    assert _type_equivalent("INTEGER", "JSON") is False
+
+
+def test_type_equivalent_ignores_type_parameters() -> None:
+    """Length / precision differences are out of scope for this helper --
+    the goal is wholesale-type drift, not dialect-rendered size defaults."""
+    from deerflow.persistence.migrations._helpers import _type_equivalent
+
+    assert _type_equivalent("VARCHAR(255)", "VARCHAR(500)") is True
+    assert _type_equivalent("NUMERIC(10,2)", "NUMERIC(20,4)") is True
+
+
+def test_type_equivalent_returns_true_on_missing_info() -> None:
+    """Missing reflected info must not false-positive into a noisy warning."""
+    from deerflow.persistence.migrations._helpers import _type_equivalent
+
+    assert _type_equivalent(None, sa.JSON()) is True
+    assert _type_equivalent(sa.JSON(), None) is True
+    assert _type_equivalent("", "JSON") is True
 
 
 # ---------------------------------------------------------------------------

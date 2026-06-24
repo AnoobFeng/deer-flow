@@ -165,6 +165,19 @@ def _get_sqlite_local_lock(engine: AsyncEngine) -> asyncio.Lock:
     return lock
 
 
+def _escape_url_for_alembic(url: str) -> str:
+    """Double literal ``%`` so ``ConfigParser`` interpolation leaves the URL intact.
+
+    ``alembic.config.Config.set_main_option`` forwards to ``ConfigParser.set``,
+    which performs ``%(name)s``-style interpolation on the value. A URL-encoded
+    password like ``p%40ss`` (``@`` escaped to ``%40``) would otherwise raise
+    ``InterpolationSyntaxError``. Doubling every literal ``%`` makes
+    ConfigParser unescape it back to one. Shared with
+    ``scripts/_autogen_revision.py`` so the round-trip rule lives in one place.
+    """
+    return url.replace("%", "%%")
+
+
 def _alembic_safe_url(engine: AsyncEngine) -> str:
     """Render *engine*'s URL in a form alembic ``set_main_option`` accepts.
 
@@ -174,14 +187,12 @@ def _alembic_safe_url(engine: AsyncEngine) -> str:
        the password as ``***`` -- so alembic's stamp/upgrade would open its own
        connection with garbage credentials and fail at runtime, even though
        the live engine connects fine. Fix: ``render_as_string(hide_password=False)``.
-    2. ``alembic.config.Config.set_main_option`` forwards to
-       ``ConfigParser.set``, which performs ``%(name)s``-style interpolation
-       on the value. A URL-encoded password like ``p%40ss`` (``@`` escaped to
-       ``%40``) would raise ``InterpolationSyntaxError``. Fix: double every
-       literal ``%`` so ConfigParser unescapes it back to one.
+    2. ConfigParser interpolation on ``%`` -- delegated to
+       ``_escape_url_for_alembic`` so the rule is shared with the autogen
+       script.
     """
     rendered = engine.url.render_as_string(hide_password=False)
-    return rendered.replace("%", "%%")
+    return _escape_url_for_alembic(rendered)
 
 
 def _get_alembic_config(engine: AsyncEngine) -> AlembicConfig:

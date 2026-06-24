@@ -39,6 +39,7 @@ from alembic import command
 from alembic.config import Config
 
 import deerflow.persistence.models  # noqa: F401  -- registers ORM models with Base.metadata
+from deerflow.persistence.bootstrap import _escape_url_for_alembic
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR = BACKEND_DIR / "packages/harness/deerflow/persistence/migrations"
@@ -47,9 +48,9 @@ MIGRATIONS_DIR = BACKEND_DIR / "packages/harness/deerflow/persistence/migrations
 def _alembic_config(url: str) -> Config:
     cfg = Config()
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
-    # ConfigParser treats ``%`` as interpolation syntax. Escape literal URL
-    # percents so encoded paths/passwords survive round-tripping.
-    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    # Shared with ``bootstrap._alembic_safe_url`` so the ConfigParser ``%``
+    # interpolation rule lives in one place.
+    cfg.set_main_option("sqlalchemy.url", _escape_url_for_alembic(url))
     return cfg
 
 
