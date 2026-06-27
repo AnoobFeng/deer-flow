@@ -7,6 +7,7 @@ import copy
 import json
 import logging
 import math
+import os
 import re
 import uuid
 from typing import Any
@@ -22,6 +23,7 @@ from deerflow.agents.memory.storage import (
 )
 from deerflow.config.memory_config import get_memory_config
 from deerflow.models import create_chat_model
+from deerflow.tracing import inject_langfuse_metadata, langfuse_trace_attribute_context
 
 logger = logging.getLogger(__name__)
 
@@ -516,7 +518,24 @@ class MemoryUpdater:
 
             current_memory, prompt = prepared
             model = self._get_model()
-            response = model.invoke(prompt, config={"run_name": "memory_agent"})
+            model_name = self._model_name or get_memory_config().model_name
+            invoke_config: dict[str, Any] = {"run_name": "memory_agent"}
+            inject_langfuse_metadata(
+                invoke_config,
+                thread_id=thread_id,
+                user_id=user_id,
+                assistant_id="memory_agent",
+                model_name=model_name,
+                environment=os.environ.get("DEER_FLOW_ENV") or os.environ.get("ENVIRONMENT"),
+            )
+            with langfuse_trace_attribute_context(
+                thread_id=thread_id,
+                user_id=user_id,
+                assistant_id="memory_agent",
+                model_name=model_name,
+                environment=os.environ.get("DEER_FLOW_ENV") or os.environ.get("ENVIRONMENT"),
+            ):
+                response = model.invoke(prompt, config=invoke_config)
             return self._finalize_update(
                 current_memory=current_memory,
                 response_content=response.content,

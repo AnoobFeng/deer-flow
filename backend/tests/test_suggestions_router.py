@@ -2,7 +2,32 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.gateway.routers import suggestions
+
+
+@pytest.fixture(autouse=True)
+def _clear_tracing_env(monkeypatch):
+    from deerflow.config.tracing_config import reset_tracing_config
+
+    for name in (
+        "LANGFUSE_TRACING",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_BASE_URL",
+        "LANGSMITH_TRACING",
+        "LANGCHAIN_TRACING_V2",
+        "LANGCHAIN_TRACING",
+        "LANGSMITH_API_KEY",
+        "LANGCHAIN_API_KEY",
+        "DEER_FLOW_ENV",
+        "ENVIRONMENT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    reset_tracing_config()
+    yield
+    reset_tracing_config()
 
 
 def test_strip_markdown_code_fence_removes_wrapping():
@@ -108,6 +133,65 @@ def test_generate_suggestions_parses_and_limits(monkeypatch):
     assert result.suggestions == ["Q1", "Q2", "Q3"]
     fake_model.ainvoke.assert_awaited_once()
     assert fake_model.ainvoke.await_args.kwargs["config"] == {"run_name": "suggest_agent"}
+
+
+def test_generate_suggestions_injects_langfuse_session_and_user_metadata(monkeypatch):
+    from deerflow.config.tracing_config import reset_tracing_config
+
+    monkeypatch.setenv("LANGFUSE_TRACING", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+    reset_tracing_config()
+    monkeypatch.setattr(suggestions, "get_effective_user_id", lambda: "user-77")
+
+    req = suggestions.SuggestionsRequest(
+        messages=[
+            suggestions.SuggestionMessage(role="user", content="Hi"),
+            suggestions.SuggestionMessage(role="assistant", content="Hello"),
+        ],
+        n=2,
+        model_name="suggest-model",
+    )
+    fake_model = MagicMock()
+    fake_model.ainvoke = AsyncMock(return_value=MagicMock(content='["Q1", "Q2"]'))
+    monkeypatch.setattr(suggestions, "create_chat_model", lambda **kwargs: fake_model)
+    context_calls: list[dict] = []
+
+    class FakeContext:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+    def fake_context(**kwargs):
+        context_calls.append(kwargs)
+        return FakeContext()
+
+    monkeypatch.setattr(suggestions, "langfuse_trace_attribute_context", fake_context)
+
+    try:
+        result = asyncio.run(suggestions.generate_suggestions.__wrapped__("thread-suggest", req, request=None, config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True))))
+    finally:
+        reset_tracing_config()
+
+    assert result.suggestions == ["Q1", "Q2"]
+    invoke_config = fake_model.ainvoke.await_args.kwargs["config"]
+    metadata = invoke_config["metadata"]
+    assert invoke_config["run_name"] == "suggest_agent"
+    assert metadata["langfuse_session_id"] == "thread-suggest"
+    assert metadata["langfuse_user_id"] == "user-77"
+    assert metadata["langfuse_trace_name"] == "suggest_agent"
+    assert "model:suggest-model" in metadata["langfuse_tags"]
+    assert context_calls == [
+        {
+            "thread_id": "thread-suggest",
+            "user_id": "user-77",
+            "assistant_id": "suggest_agent",
+            "model_name": "suggest-model",
+            "environment": None,
+        }
+    ]
 
 
 def test_generate_suggestions_parses_list_block_content(monkeypatch):

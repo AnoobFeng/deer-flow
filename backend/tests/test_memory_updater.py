@@ -1,6 +1,8 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from deerflow.agents.memory.prompt import format_conversation_for_update
 from deerflow.agents.memory.updater import (
     MemoryUpdater,
@@ -37,6 +39,29 @@ def _memory_config(**overrides: object) -> MemoryConfig:
     for key, value in overrides.items():
         setattr(config, key, value)
     return config
+
+
+@pytest.fixture(autouse=True)
+def _clear_tracing_env(monkeypatch):
+    from deerflow.config.tracing_config import reset_tracing_config
+
+    for name in (
+        "LANGFUSE_TRACING",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_BASE_URL",
+        "LANGSMITH_TRACING",
+        "LANGCHAIN_TRACING_V2",
+        "LANGCHAIN_TRACING",
+        "LANGSMITH_API_KEY",
+        "LANGCHAIN_API_KEY",
+        "DEER_FLOW_ENV",
+        "ENVIRONMENT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    reset_tracing_config()
+    yield
+    reset_tracing_config()
 
 
 def test_apply_updates_skips_existing_duplicate_and_preserves_removals() -> None:
@@ -1172,6 +1197,70 @@ class TestUserIdForwarding:
         mock_storage.save.assert_called_once()
         save_call = mock_storage.save.call_args
         assert save_call.kwargs.get("user_id") == "user-42" or (len(save_call.args) > 2 and save_call.args[2] == "user-42")
+
+    def test_sync_update_injects_langfuse_session_and_user_metadata(self, monkeypatch):
+        """Memory's standalone LLM trace should still group under the thread session."""
+        from deerflow.config.tracing_config import reset_tracing_config
+
+        monkeypatch.setenv("LANGFUSE_TRACING", "true")
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+        reset_tracing_config()
+
+        updater = MemoryUpdater()
+        valid_json = '{"user": {}, "history": {}, "newFacts": [], "factsToRemove": []}'
+        model = self._make_mock_model(valid_json)
+        mock_storage = MagicMock()
+        mock_storage.save = MagicMock(return_value=True)
+        context_calls: list[dict] = []
+
+        class FakeContext:
+            def __enter__(self):
+                return None
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+        def fake_context(**kwargs):
+            context_calls.append(kwargs)
+            return FakeContext()
+
+        try:
+            with (
+                patch.object(updater, "_get_model", return_value=model),
+                patch("deerflow.agents.memory.updater.langfuse_trace_attribute_context", side_effect=fake_context),
+                patch("deerflow.agents.memory.updater.get_memory_config", return_value=_memory_config(enabled=True, model_name="memory-model")),
+                patch("deerflow.agents.memory.updater.get_memory_data", return_value=_make_memory()),
+                patch("deerflow.agents.memory.updater.get_memory_storage", return_value=mock_storage),
+            ):
+                msg = MagicMock()
+                msg.type = "human"
+                msg.content = "Hello"
+                ai_msg = MagicMock()
+                ai_msg.type = "ai"
+                ai_msg.content = "Hi"
+                ai_msg.tool_calls = []
+                result = updater.update_memory([msg, ai_msg], thread_id="thread-memory", user_id="user-42")
+        finally:
+            reset_tracing_config()
+
+        assert result is True
+        invoke_config = model.invoke.call_args.kwargs["config"]
+        metadata = invoke_config["metadata"]
+        assert invoke_config["run_name"] == "memory_agent"
+        assert metadata["langfuse_session_id"] == "thread-memory"
+        assert metadata["langfuse_user_id"] == "user-42"
+        assert metadata["langfuse_trace_name"] == "memory_agent"
+        assert "model:memory-model" in metadata["langfuse_tags"]
+        assert context_calls == [
+            {
+                "thread_id": "thread-memory",
+                "user_id": "user-42",
+                "assistant_id": "memory_agent",
+                "model_name": "memory-model",
+                "environment": None,
+            }
+        ]
 
     def test_async_update_forwards_user_id_to_load_and_save(self):
         """aupdate_memory must pass user_id through to the sync delegate."""

@@ -135,3 +135,58 @@ def test_thread_id_none_still_produces_metadata(monkeypatch):
 
     assert result["langfuse_session_id"] is None
     assert result["langfuse_user_id"] == "u-1"
+
+
+def test_trace_attribute_context_is_noop_when_langfuse_disabled(monkeypatch):
+    context = tracing_metadata.langfuse_trace_attribute_context(
+        thread_id="thread-1",
+        user_id="user-1",
+        assistant_id="memory_agent",
+        model_name="gpt-4o",
+    )
+
+    with context as value:
+        assert value is None
+
+
+def test_trace_attribute_context_calls_langfuse_propagation(monkeypatch):
+    import sys
+    import types
+
+    _enable_langfuse(monkeypatch)
+    calls: list[dict] = []
+
+    class FakeContext:
+        def __enter__(self):
+            calls.append({"entered": True})
+
+        def __exit__(self, exc_type, exc, traceback):
+            calls.append({"exited": True})
+
+    def fake_propagate_attributes(**kwargs):
+        calls.append(kwargs)
+        return FakeContext()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "langfuse",
+        types.SimpleNamespace(propagate_attributes=fake_propagate_attributes),
+    )
+
+    context = tracing_metadata.langfuse_trace_attribute_context(
+        thread_id="thread-1",
+        user_id="user-1",
+        assistant_id="memory_agent",
+        model_name="memory-model",
+        environment="test",
+    )
+    with context:
+        pass
+
+    assert calls[0] == {
+        "session_id": "thread-1",
+        "user_id": "user-1",
+        "trace_name": "memory_agent",
+        "tags": ["env:test", "model:memory-model"],
+    }
+    assert calls[1:] == [{"entered": True}, {"exited": True}]

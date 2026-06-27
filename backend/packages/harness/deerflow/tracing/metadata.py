@@ -16,6 +16,7 @@ right metadata without leaking Langfuse internals into the call sites.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any
 
 from deerflow.config import get_enabled_tracing_providers
@@ -103,3 +104,41 @@ def inject_langfuse_metadata(
     for key, value in langfuse_metadata.items():
         merged_metadata.setdefault(key, value)
     config["metadata"] = merged_metadata
+
+
+def langfuse_trace_attribute_context(
+    *,
+    thread_id: str | None,
+    user_id: str | None = None,
+    assistant_id: str | None = None,
+    model_name: str | None = None,
+    environment: str | None = None,
+):
+    """Return a context manager that propagates Langfuse trace attributes.
+
+    ``inject_langfuse_metadata`` is enough for graph-root LangChain callbacks,
+    because the Langfuse handler sees ``on_chain_start(parent_run_id=None)`` and
+    promotes reserved metadata to trace attributes. Standalone model-level
+    traces (for example ``MemoryUpdater`` and suggestions) start at
+    ``on_llm_start`` instead, so wrap those calls with Langfuse's propagation
+    context to make ``session_id`` / ``user_id`` available on the trace itself.
+    """
+    langfuse_metadata = build_langfuse_trace_metadata(
+        thread_id=thread_id,
+        user_id=user_id,
+        assistant_id=assistant_id,
+        model_name=model_name,
+        environment=environment,
+    )
+    if not langfuse_metadata:
+        return nullcontext()
+
+    from langfuse import propagate_attributes
+
+    tags = langfuse_metadata.get("langfuse_tags")
+    return propagate_attributes(
+        session_id=langfuse_metadata.get("langfuse_session_id") if isinstance(langfuse_metadata.get("langfuse_session_id"), str) else None,
+        user_id=langfuse_metadata.get("langfuse_user_id") if isinstance(langfuse_metadata.get("langfuse_user_id"), str) else None,
+        trace_name=langfuse_metadata.get("langfuse_trace_name") if isinstance(langfuse_metadata.get("langfuse_trace_name"), str) else None,
+        tags=tags if isinstance(tags, list) else None,
+    )
