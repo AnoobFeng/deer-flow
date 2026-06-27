@@ -149,6 +149,26 @@ def test_trace_attribute_context_is_noop_when_langfuse_disabled(monkeypatch):
         assert value is None
 
 
+def test_trace_attribute_context_falls_back_when_propagate_attributes_missing(monkeypatch):
+    """Old langfuse (3.4.1–3.8.x) lacks propagate_attributes; degrade silently."""
+    import sys
+    import types
+
+    _enable_langfuse(monkeypatch)
+    # SimpleNamespace without propagate_attributes -> `from langfuse import
+    # propagate_attributes` raises ImportError, which the helper must swallow.
+    monkeypatch.setitem(sys.modules, "langfuse", types.SimpleNamespace())
+
+    context = tracing_metadata.langfuse_trace_attribute_context(
+        thread_id="thread-1",
+        user_id="user-1",
+        assistant_id="memory_agent",
+        model_name="memory-model",
+    )
+    with context as value:
+        assert value is None
+
+
 def test_trace_attribute_context_calls_langfuse_propagation(monkeypatch):
     import sys
     import types

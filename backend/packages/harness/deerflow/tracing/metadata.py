@@ -133,7 +133,16 @@ def langfuse_trace_attribute_context(
     if not langfuse_metadata:
         return nullcontext()
 
-    from langfuse import propagate_attributes
+    try:
+        from langfuse import propagate_attributes
+    except ImportError:
+        # propagate_attributes was added in langfuse 3.9.0. The harness floor
+        # is langfuse>=3.4.1 so installs in 3.4.1–3.8.x reach here without
+        # the symbol; degrade to the pre-helper behavior (metadata still
+        # lands on the generation observation via inject_langfuse_metadata,
+        # but the trace root does not get session_id/user_id lifted) rather
+        # than crashing the standalone LLM call.
+        return nullcontext()
 
     tags = langfuse_metadata.get("langfuse_tags")
     return propagate_attributes(
