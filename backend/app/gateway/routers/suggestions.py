@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 
 from fastapi import APIRouter, Depends, Request
@@ -9,7 +10,10 @@ from pydantic import BaseModel, Field
 from app.gateway.authz import require_permission
 from app.gateway.deps import get_config
 from deerflow.config.app_config import AppConfig
+from deerflow.logging_config import observability_context
 from deerflow.models import create_chat_model
+from deerflow.runtime.user_context import get_effective_user_id
+from deerflow.tracing import ensure_deerflow_trace_id, inject_langfuse_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,7 @@ class SuggestionsRequest(BaseModel):
     messages: list[SuggestionMessage] = Field(..., description="Recent conversation messages")
     n: int = Field(default=3, ge=1, le=5, description="Number of suggestions to generate")
     model_name: str | None = Field(default=None, description="Optional model override")
+    deerflow_trace_id: str | None = Field(default=None, description="Optional parent DeerFlow trace correlation id")
 
 
 class SuggestionsResponse(BaseModel):
@@ -161,6 +166,22 @@ async def generate_suggestions(
     if not conversation:
         return SuggestionsResponse(suggestions=[])
 
+    model_config: dict = {"run_name": "suggest_agent"}
+    deerflow_trace_id = body.deerflow_trace_id
+    if deerflow_trace_id:
+        ensure_deerflow_trace_id(model_config, deerflow_trace_id)
+    if request is not None and deerflow_trace_id:
+        request.state.deerflow_trace_id = deerflow_trace_id
+    inject_langfuse_metadata(
+        model_config,
+        thread_id=thread_id,
+        user_id=get_effective_user_id(),
+        assistant_id="suggest_agent",
+        model_name=body.model_name,
+        environment=os.environ.get("DEER_FLOW_ENV") or os.environ.get("ENVIRONMENT"),
+        deerflow_trace_id=deerflow_trace_id,
+    )
+
     system_instruction = (
         "You are generating follow-up questions to help the user continue the conversation.\n"
         f"Based on the conversation below, produce EXACTLY {n} short questions the user might ask next.\n"
@@ -174,13 +195,14 @@ async def generate_suggestions(
     user_content = f"Conversation Context:\n{conversation}\n\nGenerate {n} follow-up questions"
 
     try:
-        model = create_chat_model(name=body.model_name, thinking_enabled=False, app_config=config)
-        response = await model.ainvoke([SystemMessage(content=system_instruction), HumanMessage(content=user_content)], config={"run_name": "suggest_agent"})
-        raw = _extract_response_text(response.content)
-        suggestions = _parse_json_string_list(raw) or []
-        cleaned = [s.replace("\n", " ").strip() for s in suggestions if s.strip()]
-        cleaned = cleaned[:n]
-        return SuggestionsResponse(suggestions=cleaned)
+        with observability_context(deerflow_trace_id):
+            model = create_chat_model(name=body.model_name, thinking_enabled=False, app_config=config)
+            response = await model.ainvoke([SystemMessage(content=system_instruction), HumanMessage(content=user_content)], config=model_config)
+            raw = _extract_response_text(response.content)
+            suggestions = _parse_json_string_list(raw) or []
+            cleaned = [s.replace("\n", " ").strip() for s in suggestions if s.strip()]
+            cleaned = cleaned[:n]
+            return SuggestionsResponse(suggestions=cleaned)
     except Exception as exc:
         logger.exception("Failed to generate suggestions: thread_id=%s err=%s", thread_id, exc)
         return SuggestionsResponse(suggestions=[])

@@ -27,10 +27,11 @@ from typing import Any, Literal, cast
 from langgraph.checkpoint.base import empty_checkpoint
 
 from deerflow.config.app_config import AppConfig
+from deerflow.logging_config import bind_observability_context, reset_observability_context
 from deerflow.runtime.serialization import serialize
 from deerflow.runtime.stream_bridge import StreamBridge
 from deerflow.runtime.user_context import get_effective_user_id
-from deerflow.tracing import inject_langfuse_metadata
+from deerflow.tracing import ensure_deerflow_trace_id, inject_langfuse_metadata
 
 from .manager import RunManager, RunRecord
 from .naming import resolve_root_run_name
@@ -148,6 +149,10 @@ async def run_agent(
     pre_run_snapshot: dict[str, Any] | None = None
     snapshot_capture_failed = False
     llm_error_fallback_message: str | None = None
+    deerflow_trace_id = ensure_deerflow_trace_id(config)
+    record.metadata.setdefault("deerflow_trace_id", deerflow_trace_id)
+    effective_user_id = get_effective_user_id()
+    observability_token = bind_observability_context(deerflow_trace_id)
 
     journal = None
 
@@ -204,6 +209,7 @@ async def run_agent(
             {
                 "run_id": run_id,
                 "thread_id": thread_id,
+                "deerflow_trace_id": deerflow_trace_id,
             },
         )
 
@@ -238,10 +244,11 @@ async def run_agent(
         inject_langfuse_metadata(
             config,
             thread_id=thread_id,
-            user_id=get_effective_user_id(),
+            user_id=effective_user_id,
             assistant_id=record.assistant_id,
             model_name=record.model_name,
             environment=os.environ.get("DEER_FLOW_ENV") or os.environ.get("ENVIRONMENT"),
+            deerflow_trace_id=deerflow_trace_id,
         )
 
         # Resolve after runtime context installation so context/configurable reflect
@@ -430,8 +437,11 @@ async def run_agent(
             except Exception:
                 logger.debug("Failed to update thread_meta status for %s (non-fatal)", thread_id)
 
-        await bridge.publish_end(run_id)
-        asyncio.create_task(bridge.cleanup(run_id, delay=60))
+        try:
+            await bridge.publish_end(run_id)
+            asyncio.create_task(bridge.cleanup(run_id, delay=60))
+        finally:
+            reset_observability_context(observability_token)
 
 
 # ---------------------------------------------------------------------------

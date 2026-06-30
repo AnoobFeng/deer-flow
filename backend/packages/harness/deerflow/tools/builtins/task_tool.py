@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import uuid
 from dataclasses import replace
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
@@ -22,6 +21,7 @@ from deerflow.subagents.executor import (
     request_cancel_background_task,
 )
 from deerflow.tools.types import Runtime
+from deerflow.tracing import DEERFLOW_TRACE_ID_METADATA_KEY, new_deerflow_trace_id
 
 if TYPE_CHECKING:
     from deerflow.config.app_config import AppConfig
@@ -268,8 +268,11 @@ async def task_tool(
         metadata = runtime.config.get("metadata", {})
         parent_model = metadata.get("model_name")
 
-        # Get or generate trace_id for distributed tracing
-        trace_id = metadata.get("trace_id") or str(uuid.uuid4())[:8]
+        # Get or generate trace_id for distributed tracing. Prefer the unified
+        # DeerFlow runtime correlation id; fall back to the legacy short trace
+        # field only for compatibility with older callers.
+        context_trace_id = runtime.context.get(DEERFLOW_TRACE_ID_METADATA_KEY) if runtime.context else None
+        trace_id = context_trace_id or metadata.get(DEERFLOW_TRACE_ID_METADATA_KEY) or metadata.get("trace_id") or new_deerflow_trace_id()
 
     # Get user_id for tracing (uses standard resolution order)
     user_id = resolve_runtime_user_id(runtime)

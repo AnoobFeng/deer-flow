@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, call, patch
 
 from deerflow.agents.memory.queue import ConversationContext, MemoryUpdateQueue
 from deerflow.config.memory_config import MemoryConfig
+from deerflow.logging_config import get_observability_context
 
 
 def _memory_config(**overrides: object) -> MemoryConfig:
@@ -51,6 +52,7 @@ def test_process_queue_forwards_correction_flag_to_updater() -> None:
         correction_detected=True,
         reinforcement_detected=False,
         user_id=None,
+        deerflow_trace_id=None,
     )
 
 
@@ -92,7 +94,94 @@ def test_process_queue_forwards_reinforcement_flag_to_updater() -> None:
         correction_detected=False,
         reinforcement_detected=True,
         user_id=None,
+        deerflow_trace_id=None,
     )
+
+
+def test_process_queue_forwards_deerflow_trace_id_to_updater() -> None:
+    queue = MemoryUpdateQueue()
+    queue._queue = [
+        ConversationContext(
+            thread_id="thread-1",
+            messages=["conversation"],
+            agent_name="lead_agent",
+            user_id="user-1",
+            deerflow_trace_id="trace-1",
+        )
+    ]
+    mock_updater = MagicMock()
+    mock_updater.update_memory.return_value = True
+
+    with patch("deerflow.agents.memory.updater.MemoryUpdater", return_value=mock_updater):
+        queue._process_queue()
+
+    mock_updater.update_memory.assert_called_once_with(
+        messages=["conversation"],
+        thread_id="thread-1",
+        agent_name="lead_agent",
+        correction_detected=False,
+        reinforcement_detected=False,
+        user_id="user-1",
+        deerflow_trace_id="trace-1",
+    )
+
+
+def test_process_queue_binds_trace_id_for_memory_update_logs() -> None:
+    queue = MemoryUpdateQueue()
+    queue._queue = [
+        ConversationContext(
+            thread_id="thread-1",
+            messages=["conversation"],
+            deerflow_trace_id="trace-1",
+        )
+    ]
+    mock_updater = MagicMock()
+    mock_updater.update_memory.return_value = True
+    captured: list[tuple[str, dict[str, str]]] = []
+
+    def capture_info(message: str, *args: object, **kwargs: object) -> None:
+        if message.startswith("Updating memory") or message.startswith("Memory updated"):
+            captured.append((message, get_observability_context()))
+
+    with (
+        patch("deerflow.agents.memory.updater.MemoryUpdater", return_value=mock_updater),
+        patch("deerflow.agents.memory.queue.logger.info", side_effect=capture_info),
+    ):
+        queue._process_queue()
+
+    assert [message for message, _ in captured] == [
+        "Updating memory for thread %s",
+        "Memory updated successfully for thread %s",
+    ]
+    assert [context for _, context in captured] == [
+        {"trace_id": "trace-1"},
+        {"trace_id": "trace-1"},
+    ]
+
+
+def test_process_queue_binds_trace_id_for_memory_error_log() -> None:
+    queue = MemoryUpdateQueue()
+    queue._queue = [
+        ConversationContext(
+            thread_id="thread-1",
+            messages=["conversation"],
+            deerflow_trace_id="trace-1",
+        )
+    ]
+    mock_updater = MagicMock()
+    mock_updater.update_memory.side_effect = RuntimeError("boom")
+    captured: list[dict[str, str]] = []
+
+    def capture_error(*args: object, **kwargs: object) -> None:
+        captured.append(get_observability_context())
+
+    with (
+        patch("deerflow.agents.memory.updater.MemoryUpdater", return_value=mock_updater),
+        patch("deerflow.agents.memory.queue.logger.error", side_effect=capture_error),
+    ):
+        queue._process_queue()
+
+    assert captured == [{"trace_id": "trace-1"}]
 
 
 def test_flush_nowait_cancels_existing_timer_and_starts_immediate_timer() -> None:
@@ -235,6 +324,7 @@ def test_process_queue_updates_different_agents_in_same_thread_separately() -> N
                 correction_detected=False,
                 reinforcement_detected=False,
                 user_id=None,
+                deerflow_trace_id=None,
             ),
             call(
                 messages=["agent-b"],
@@ -243,6 +333,7 @@ def test_process_queue_updates_different_agents_in_same_thread_separately() -> N
                 correction_detected=False,
                 reinforcement_detected=False,
                 user_id=None,
+                deerflow_trace_id=None,
             ),
         ]
     )

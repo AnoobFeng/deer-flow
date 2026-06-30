@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from deerflow.config import get_enabled_tracing_providers
+from deerflow.tracing.correlation import DEERFLOW_TRACE_ID_METADATA_KEY, get_deerflow_trace_id
 
 # Lazy-imported below to avoid a circular import: ``deerflow.runtime`` eagerly
 # imports the run worker, which in turn needs ``deerflow.tracing``.
@@ -32,6 +33,7 @@ def build_langfuse_trace_metadata(
     assistant_id: str | None = None,
     model_name: str | None = None,
     environment: str | None = None,
+    deerflow_trace_id: str | None = None,
 ) -> dict[str, Any]:
     """Return Langfuse trace-attribute metadata for ``RunnableConfig.metadata``.
 
@@ -47,6 +49,7 @@ def build_langfuse_trace_metadata(
         model_name: Model name; emitted as ``model:<name>`` in ``langfuse_tags``.
         environment: Deployment env (e.g. ``"production"``); emitted as
             ``env:<value>`` in ``langfuse_tags``.
+        deerflow_trace_id: DeerFlow correlation id emitted as trace metadata.
     """
     if "langfuse" not in get_enabled_tracing_providers():
         return {}
@@ -66,6 +69,8 @@ def build_langfuse_trace_metadata(
         tags.append(f"model:{model_name}")
     if tags:
         metadata["langfuse_tags"] = tags
+    if deerflow_trace_id:
+        metadata[DEERFLOW_TRACE_ID_METADATA_KEY] = deerflow_trace_id
 
     return metadata
 
@@ -78,6 +83,7 @@ def inject_langfuse_metadata(
     assistant_id: str | None = None,
     model_name: str | None = None,
     environment: str | None = None,
+    deerflow_trace_id: str | None = None,
 ) -> None:
     """Merge Langfuse trace-attribute metadata into ``config["metadata"]``.
 
@@ -95,6 +101,7 @@ def inject_langfuse_metadata(
         assistant_id=assistant_id,
         model_name=model_name,
         environment=environment,
+        deerflow_trace_id=deerflow_trace_id or get_deerflow_trace_id(config),
     )
     if not langfuse_metadata:
         return

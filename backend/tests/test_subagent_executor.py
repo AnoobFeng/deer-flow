@@ -2158,6 +2158,7 @@ class TestSubagentTracingWiring:
         metadata = (fake_agent.captured_config or {}).get("metadata") or {}
         assert metadata.get("langfuse_session_id") == "thread-trace-1", "subagent trace must inherit parent thread_id as session_id"
         assert metadata.get("langfuse_user_id") == "alice", "subagent trace must carry the user_id captured at task_tool layer"
+        assert metadata.get("deerflow_trace_id") == "trace-1"
         # Underscores are normalized to hyphens so the trace name matches the
         # lead-agent naming shape.
         assert metadata.get("langfuse_trace_name") == "subagent:general-purpose"
@@ -2372,6 +2373,7 @@ class TestSubagentGuardrailAttribution:
 
         context = fake_agent.captured_context
         assert context is not None, "subagent context must be passed to astream"
+        assert context.get("deerflow_trace_id") == "trace-attrib-1"
         assert context.get("user_id") == "alice"
         assert context.get("user_role") == "admin"
         assert context.get("oauth_provider") == "keycloak"

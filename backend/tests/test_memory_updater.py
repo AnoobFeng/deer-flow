@@ -891,6 +891,34 @@ class TestSyncUpdateIsolatesProviderClientPool:
         model.invoke.assert_called_once()
         model.ainvoke.assert_not_called()
 
+    def test_sync_update_attaches_deerflow_trace_metadata(self):
+        updater = MemoryUpdater()
+        valid_json = '{"user": {}, "history": {}, "newFacts": [], "factsToRemove": []}'
+        model = MagicMock()
+        response = MagicMock()
+        response.content = valid_json
+        model.invoke = MagicMock(return_value=response)
+
+        with (
+            patch.object(updater, "_get_model", return_value=model),
+            patch("deerflow.agents.memory.updater.get_memory_config", return_value=_memory_config(enabled=True)),
+            patch("deerflow.agents.memory.updater.get_memory_data", return_value=_make_memory()),
+            patch("deerflow.agents.memory.updater.get_memory_storage", return_value=MagicMock(save=MagicMock(return_value=True))),
+        ):
+            msg = MagicMock()
+            msg.type = "human"
+            msg.content = "Hello"
+            ai_msg = MagicMock()
+            ai_msg.type = "ai"
+            ai_msg.content = "Hi"
+            ai_msg.tool_calls = []
+            result = updater.update_memory([msg, ai_msg], thread_id="thread-1", user_id="user-1", deerflow_trace_id="trace-memory-1")
+
+        assert result is True
+        call_config = model.invoke.call_args.kwargs["config"]
+        assert call_config["run_name"] == "memory_agent"
+        assert call_config["metadata"]["deerflow_trace_id"] == "trace-memory-1"
+
     def test_no_event_loop_created_during_sync_update(self):
         """Sync update must not create or destroy any event loop."""
         updater = MemoryUpdater()

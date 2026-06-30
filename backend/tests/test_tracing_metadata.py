@@ -123,6 +123,18 @@ def test_tags_omitted_when_no_tag_inputs(monkeypatch):
     assert "langfuse_tags" not in result
 
 
+def test_deerflow_trace_id_included_when_provided(monkeypatch):
+    _enable_langfuse(monkeypatch)
+
+    result = tracing_metadata.build_langfuse_trace_metadata(
+        thread_id="t",
+        user_id="u",
+        deerflow_trace_id="trace-123",
+    )
+
+    assert result["deerflow_trace_id"] == "trace-123"
+
+
 def test_thread_id_none_still_produces_metadata(monkeypatch):
     # Stateless run paths may not have a thread_id — we still want
     # user_id / trace_name to flow through so Users page works.

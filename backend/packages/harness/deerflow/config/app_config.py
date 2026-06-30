@@ -18,6 +18,7 @@ from deerflow.config.checkpointer_config import CheckpointerConfig, load_checkpo
 from deerflow.config.database_config import DatabaseConfig
 from deerflow.config.extensions_config import ExtensionsConfig
 from deerflow.config.guardrails_config import GuardrailsConfig, load_guardrails_config_from_dict
+from deerflow.config.logging_config import LoggingConfig
 from deerflow.config.loop_detection_config import LoopDetectionConfig
 from deerflow.config.memory_config import MemoryConfig, load_memory_config_from_dict
 from deerflow.config.model_config import ModelConfig
@@ -96,6 +97,13 @@ class AppConfig(BaseModel):
         description=format_field_description(
             "log_level",
             field_doc="Logging level for deerflow and app modules (debug/info/warning/error); third-party libraries are not affected.",
+        ),
+    )
+    logging: LoggingConfig = Field(
+        default_factory=LoggingConfig,
+        description=format_field_description(
+            "logging",
+            field_doc="Optional logging enhancement settings for trace_id correlation and text/json formatting.",
         ),
     )
     token_usage: TokenUsageConfig = Field(default_factory=TokenUsageConfig, description="Token usage tracking configuration")

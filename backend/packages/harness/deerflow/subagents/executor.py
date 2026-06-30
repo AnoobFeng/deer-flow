@@ -23,12 +23,13 @@ from langchain_core.runnables import RunnableConfig
 from deerflow.agents.thread_state import SandboxState, ThreadDataState, ThreadState
 from deerflow.config import get_app_config
 from deerflow.config.app_config import AppConfig
+from deerflow.logging_config import bind_observability_context, reset_observability_context
 from deerflow.models import create_chat_model
 from deerflow.skills.tool_policy import filter_tools_by_skill_allowed_tools
 from deerflow.skills.types import Skill
 from deerflow.subagents.config import SubagentConfig, resolve_subagent_model_name
 from deerflow.subagents.token_collector import SubagentTokenCollector
-from deerflow.tracing import build_tracing_callbacks, inject_langfuse_metadata
+from deerflow.tracing import DEERFLOW_TRACE_ID_METADATA_KEY, build_tracing_callbacks, inject_langfuse_metadata, new_deerflow_trace_id
 
 if TYPE_CHECKING:
     # Imported lazily at runtime inside _build_initial_state: importing
@@ -329,8 +330,8 @@ class SubagentExecutor:
         self.sandbox_state = sandbox_state
         self.thread_data = thread_data
         self.thread_id = thread_id
-        # Generate trace_id if not provided (for top-level calls)
-        self.trace_id = trace_id or str(uuid.uuid4())[:8]
+        # Generate a DeerFlow correlation id if not provided (for top-level calls).
+        self.trace_id = trace_id or new_deerflow_trace_id()
         self.user_id = user_id
         # Guardrail attribution propagated from the parent runtime context.
         self.user_role = user_role
@@ -535,6 +536,7 @@ class SubagentExecutor:
         seen_message_ids: set[str] = {mid for msg in ai_messages if (mid := msg.get("id"))}
 
         collector: SubagentTokenCollector | None = None
+        observability_token = bind_observability_context(self.trace_id)
         try:
             state, final_tools, deferred_setup = await self._build_initial_state(task)
             agent = self._create_agent(final_tools, deferred_setup=deferred_setup)
@@ -577,12 +579,15 @@ class SubagentExecutor:
                 assistant_id=assistant_id,
                 model_name=self.model_name,
                 environment=os.environ.get("DEER_FLOW_ENV") or os.environ.get("ENVIRONMENT"),
+                deerflow_trace_id=self.trace_id,
             )
 
             context: dict[str, Any] = {}
             if self.thread_id:
                 run_config["configurable"] = {"thread_id": self.thread_id}
                 context["thread_id"] = self.thread_id
+            run_config.setdefault("metadata", {})[DEERFLOW_TRACE_ID_METADATA_KEY] = self.trace_id
+            context[DEERFLOW_TRACE_ID_METADATA_KEY] = self.trace_id
             if self.app_config is not None:
                 context["app_config"] = self.app_config
             # Propagate guardrail attribution so delegated tool calls are
@@ -741,6 +746,8 @@ class SubagentExecutor:
                 error=str(e),
                 token_usage_records=collector.snapshot_records() if collector is not None else None,
             )
+        finally:
+            reset_observability_context(observability_token)
 
         return result
 

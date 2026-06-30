@@ -554,8 +554,11 @@ If you are using a self-hosted Langfuse instance, set `LANGFUSE_BASE_URL` to you
 - `user_id` = effective user from `get_effective_user_id()` (falls back to `default` in no-auth mode)
 - `trace_name` = assistant id (defaults to `lead-agent`)
 - `tags` = `[env:<DEER_FLOW_ENV>, model:<model_name>]` (omitted when not set)
+- `metadata.deerflow_trace_id` = DeerFlow-generated UUID shared by a lead run and related subagent, memory, and suggestion traces
 
 These are injected into `RunnableConfig.metadata` at the graph invocation root for both the gateway path (`runtime/runs/worker.py::run_agent`) and the embedded path (`client.py::DeerFlowClient.stream`), so any LangChain-compatible callback can read them. Set `DEER_FLOW_ENV` (or `ENVIRONMENT`) to tag traces by deployment environment.
+
+Enhanced log correlation is optional and disabled by default. Set `logging.enhance.enabled=true` in `config.yaml` to add the same correlation value as a single `trace_id` field in Gateway logs without changing tracing providers. DeerFlow only echoes `X-Trace-Id` for requests that already carry a run-level `deerflow_trace_id`; ordinary requests do not get a generated fallback trace id.
 
 #### Using Both Providers
 

@@ -8,6 +8,7 @@ Verifies that the agent factory's resulting graph receives a
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 import pytest
 
@@ -96,8 +97,9 @@ async def test_run_agent_injects_langfuse_metadata(monkeypatch):
     record.abort_event = asyncio.Event()
     ctx = RunContext(checkpointer=None)
 
+    bridge = _FakeBridge()
     await run_agent(
-        _FakeBridge(),
+        bridge,
         _FakeRunManager(),
         record,
         ctx=ctx,
@@ -114,8 +116,11 @@ async def test_run_agent_injects_langfuse_metadata(monkeypatch):
     user_id = metadata.get("langfuse_user_id")
     assert user_id == "test-user-autouse", f"expected test-user-autouse, got {user_id}"
     assert metadata.get("langfuse_trace_name") == "lead-agent"
+    assert str(uuid.UUID(metadata.get("deerflow_trace_id"))) == metadata.get("deerflow_trace_id")
     tags = metadata.get("langfuse_tags") or []
     assert "model:gpt-4o" in tags
+    assert bridge.events[0][0] == "metadata"
+    assert bridge.events[0][1]["deerflow_trace_id"] == metadata.get("deerflow_trace_id")
 
 
 @pytest.mark.asyncio
@@ -246,3 +251,4 @@ async def test_run_agent_skips_metadata_when_langfuse_disabled(monkeypatch):
     assert "langfuse_session_id" not in metadata
     assert "langfuse_user_id" not in metadata
     assert "langfuse_trace_name" not in metadata
+    assert metadata.get("deerflow_trace_id")

@@ -107,7 +107,29 @@ def test_generate_suggestions_parses_and_limits(monkeypatch):
 
     assert result.suggestions == ["Q1", "Q2", "Q3"]
     fake_model.ainvoke.assert_awaited_once()
-    assert fake_model.ainvoke.await_args.kwargs["config"] == {"run_name": "suggest_agent"}
+    call_config = fake_model.ainvoke.await_args.kwargs["config"]
+    assert call_config["run_name"] == "suggest_agent"
+    assert "deerflow_trace_id" not in call_config.get("metadata", {})
+
+
+def test_generate_suggestions_reuses_parent_deerflow_trace_id(monkeypatch):
+    req = suggestions.SuggestionsRequest(
+        messages=[
+            suggestions.SuggestionMessage(role="user", content="Hi"),
+            suggestions.SuggestionMessage(role="assistant", content="Hello"),
+        ],
+        n=1,
+        deerflow_trace_id="parent-trace-1",
+    )
+    fake_model = MagicMock()
+    fake_model.ainvoke = AsyncMock(return_value=MagicMock(content='["Q1"]'))
+    monkeypatch.setattr(suggestions, "create_chat_model", lambda **kwargs: fake_model)
+
+    result = asyncio.run(suggestions.generate_suggestions.__wrapped__("t1", req, request=None, config=SimpleNamespace(suggestions=SimpleNamespace(enabled=True))))
+
+    assert result.suggestions == ["Q1"]
+    call_config = fake_model.ainvoke.await_args.kwargs["config"]
+    assert call_config["metadata"]["deerflow_trace_id"] == "parent-trace-1"
 
 
 def test_generate_suggestions_parses_list_block_content(monkeypatch):
@@ -129,7 +151,9 @@ def test_generate_suggestions_parses_list_block_content(monkeypatch):
 
     assert result.suggestions == ["Q1", "Q2"]
     fake_model.ainvoke.assert_awaited_once()
-    assert fake_model.ainvoke.await_args.kwargs["config"] == {"run_name": "suggest_agent"}
+    call_config = fake_model.ainvoke.await_args.kwargs["config"]
+    assert call_config["run_name"] == "suggest_agent"
+    assert "deerflow_trace_id" not in call_config.get("metadata", {})
 
 
 def test_generate_suggestions_parses_output_text_block_content(monkeypatch):
@@ -151,7 +175,9 @@ def test_generate_suggestions_parses_output_text_block_content(monkeypatch):
 
     assert result.suggestions == ["Q1", "Q2"]
     fake_model.ainvoke.assert_awaited_once()
-    assert fake_model.ainvoke.await_args.kwargs["config"] == {"run_name": "suggest_agent"}
+    call_config = fake_model.ainvoke.await_args.kwargs["config"]
+    assert call_config["run_name"] == "suggest_agent"
+    assert "deerflow_trace_id" not in call_config.get("metadata", {})
 
 
 def test_generate_suggestions_returns_empty_on_model_error(monkeypatch):

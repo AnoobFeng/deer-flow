@@ -38,6 +38,7 @@ from deerflow.runtime import (
 )
 from deerflow.runtime.runs.naming import resolve_root_run_name
 from deerflow.runtime.user_context import reset_current_user, set_current_user
+from deerflow.tracing import DEERFLOW_TRACE_ID_METADATA_KEY, ensure_deerflow_trace_id, new_deerflow_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -419,12 +420,17 @@ async def start_run(
 
     owner_context_token = set_current_user(SimpleNamespace(id=owner_user_id)) if owner_user_id else None
     try:
+        run_metadata = dict(body.metadata or {})
+        deerflow_trace_id = new_deerflow_trace_id()
+        run_metadata[DEERFLOW_TRACE_ID_METADATA_KEY] = deerflow_trace_id
+        request.state.deerflow_trace_id = deerflow_trace_id
+
         try:
             record = await run_mgr.create_or_reject(
                 thread_id,
                 body.assistant_id,
                 on_disconnect=disconnect,
-                metadata=body.metadata or {},
+                metadata=run_metadata,
                 kwargs={"input": body.input, "config": body.config},
                 multitask_strategy=body.multitask_strategy,
                 model_name=model_name,
@@ -463,7 +469,8 @@ async def start_run(
             graph_input = Command(resume=command["resume"])
         else:
             graph_input = normalize_input(body.input)
-        config = build_run_config(thread_id, body.config, body.metadata, assistant_id=body.assistant_id)
+        config = build_run_config(thread_id, body.config, run_metadata, assistant_id=body.assistant_id)
+        ensure_deerflow_trace_id(config, deerflow_trace_id)
         await apply_checkpoint_to_run_config(config, body=body, thread_id=thread_id, request=request)
 
         # Merge DeerFlow-specific context overrides into both ``configurable`` and ``context``.

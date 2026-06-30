@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from deerflow.config.memory_config import get_memory_config
+from deerflow.logging_config import observability_context
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class ConversationContext:
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     agent_name: str | None = None
     user_id: str | None = None
+    deerflow_trace_id: str | None = None
     correction_detected: bool = False
     reinforcement_detected: bool = False
 
@@ -55,6 +57,7 @@ class MemoryUpdateQueue:
         messages: list[Any],
         agent_name: str | None = None,
         user_id: str | None = None,
+        deerflow_trace_id: str | None = None,
         correction_detected: bool = False,
         reinforcement_detected: bool = False,
     ) -> None:
@@ -67,6 +70,7 @@ class MemoryUpdateQueue:
             user_id: The user ID captured at enqueue time. Stored in ConversationContext so it
                 survives the threading.Timer boundary (ContextVar does not propagate across
                 raw threads).
+            deerflow_trace_id: The parent runtime correlation id captured at enqueue time.
             correction_detected: Whether recent turns include an explicit correction signal.
             reinforcement_detected: Whether recent turns include a positive reinforcement signal.
         """
@@ -80,6 +84,7 @@ class MemoryUpdateQueue:
                 messages=messages,
                 agent_name=agent_name,
                 user_id=user_id,
+                deerflow_trace_id=deerflow_trace_id,
                 correction_detected=correction_detected,
                 reinforcement_detected=reinforcement_detected,
             )
@@ -93,6 +98,7 @@ class MemoryUpdateQueue:
         messages: list[Any],
         agent_name: str | None = None,
         user_id: str | None = None,
+        deerflow_trace_id: str | None = None,
         correction_detected: bool = False,
         reinforcement_detected: bool = False,
     ) -> None:
@@ -107,6 +113,7 @@ class MemoryUpdateQueue:
                 messages=messages,
                 agent_name=agent_name,
                 user_id=user_id,
+                deerflow_trace_id=deerflow_trace_id,
                 correction_detected=correction_detected,
                 reinforcement_detected=reinforcement_detected,
             )
@@ -121,6 +128,7 @@ class MemoryUpdateQueue:
         messages: list[Any],
         agent_name: str | None,
         user_id: str | None,
+        deerflow_trace_id: str | None,
         correction_detected: bool,
         reinforcement_detected: bool,
     ) -> None:
@@ -136,6 +144,7 @@ class MemoryUpdateQueue:
             messages=messages,
             agent_name=agent_name,
             user_id=user_id,
+            deerflow_trace_id=deerflow_trace_id,
             correction_detected=merged_correction_detected,
             reinforcement_detected=merged_reinforcement_detected,
         )
@@ -189,21 +198,24 @@ class MemoryUpdateQueue:
 
             for context in contexts_to_process:
                 try:
-                    logger.info("Updating memory for thread %s", context.thread_id)
-                    success = updater.update_memory(
-                        messages=context.messages,
-                        thread_id=context.thread_id,
-                        agent_name=context.agent_name,
-                        correction_detected=context.correction_detected,
-                        reinforcement_detected=context.reinforcement_detected,
-                        user_id=context.user_id,
-                    )
-                    if success:
-                        logger.info("Memory updated successfully for thread %s", context.thread_id)
-                    else:
-                        logger.warning("Memory update skipped/failed for thread %s", context.thread_id)
+                    with observability_context(context.deerflow_trace_id):
+                        logger.info("Updating memory for thread %s", context.thread_id)
+                        success = updater.update_memory(
+                            messages=context.messages,
+                            thread_id=context.thread_id,
+                            agent_name=context.agent_name,
+                            correction_detected=context.correction_detected,
+                            reinforcement_detected=context.reinforcement_detected,
+                            user_id=context.user_id,
+                            deerflow_trace_id=context.deerflow_trace_id,
+                        )
+                        if success:
+                            logger.info("Memory updated successfully for thread %s", context.thread_id)
+                        else:
+                            logger.warning("Memory update skipped/failed for thread %s", context.thread_id)
                 except Exception as e:
-                    logger.error("Error updating memory for thread %s: %s", context.thread_id, e)
+                    with observability_context(context.deerflow_trace_id):
+                        logger.error("Error updating memory for thread %s: %s", context.thread_id, e)
 
                 # Small delay between updates to avoid rate limiting
                 if len(contexts_to_process) > 1:

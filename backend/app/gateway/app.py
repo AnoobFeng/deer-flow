@@ -3,7 +3,7 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.gateway.auth_disabled import warn_if_auth_disabled_enabled
@@ -30,17 +30,13 @@ from app.gateway.routers import (
     uploads,
 )
 from deerflow.config import app_config as deerflow_app_config
-from deerflow.config.app_config import apply_logging_level
+from deerflow.logging_config import configure_logging, is_enhanced_logging_enabled
 
 AppConfig = deerflow_app_config.AppConfig
 get_app_config = deerflow_app_config.get_app_config
 
 # Default logging; lifespan overrides from config.yaml log_level.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+configure_logging("info")
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +168,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # snapshot on `app.state` to keep that contract enforceable.
     try:
         startup_config = get_app_config()
-        apply_logging_level(startup_config.log_level)
+        configure_logging(startup_config.log_level, startup_config.logging)
         logger.info("Configuration loaded successfully")
         warn_if_auth_disabled_enabled()
     except Exception as e:
@@ -361,6 +357,15 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    @app.middleware("http")
+    async def trace_response_header(request: Request, call_next):
+        response = await call_next(request)
+        if is_enhanced_logging_enabled():
+            trace_id = getattr(request.state, "deerflow_trace_id", None)
+            if trace_id:
+                response.headers["X-Trace-Id"] = trace_id
+        return response
 
     # Include routers
     # Models API is mounted at /api/models

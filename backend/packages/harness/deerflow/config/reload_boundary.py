@@ -11,7 +11,7 @@ change at runtime.
 The registry covers two kinds of entries:
 
 - Top-level ``AppConfig`` fields (``database``, ``checkpointer``,
-  ``run_events``, ``stream_bridge``, ``sandbox``, ``log_level``). For
+  ``run_events``, ``stream_bridge``, ``sandbox``, ``log_level``, ``logging``). For
   these, :func:`format_field_description` produces the standardised
   ``"startup-only: ..."`` prefix that the matching Pydantic
   ``Field(description=...)`` carries, so the boundary surfaces in IDE
@@ -50,6 +50,9 @@ STARTUP_ONLY_FIELDS: dict[str, str] = {
     "sandbox": ("get_sandbox_provider() caches the provider singleton (``_default_sandbox_provider``); a different ``sandbox.use`` class path only takes effect on next process start."),
     "log_level": (
         "apply_logging_level() runs only during app.py startup; it sets the deerflow/app logger levels and may lower root handler thresholds so configured messages can propagate. A freshly reloaded AppConfig does not retrigger it."
+    ),
+    "logging": (
+        "configure_logging() installs the trace_id formatter and context filter once during app.py startup; handler wiring is not rebuilt when config.yaml is reloaded at request time."
     ),
     # Not part of the AppConfig Pydantic schema — channel credentials are
     # consumed directly by ``start_channel_service()`` once at lifespan

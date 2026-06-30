@@ -102,6 +102,7 @@ def test_stream_injects_langfuse_metadata_when_enabled(monkeypatch):
     metadata = config.get("metadata") or {}
     assert metadata.get("langfuse_session_id") == "thread-client-1"
     assert metadata.get("langfuse_trace_name") == "lead-agent"
+    assert metadata.get("deerflow_trace_id")
     # Default no-auth context falls back to ``"default"`` user.
     assert metadata.get("langfuse_user_id") in {"default", "test-user-autouse"}
     callbacks = config.get("callbacks") or []
@@ -122,6 +123,7 @@ def test_stream_is_inert_when_langfuse_disabled(monkeypatch):
     metadata = config.get("metadata") or {}
     assert "langfuse_session_id" not in metadata
     assert "langfuse_user_id" not in metadata
+    assert metadata.get("deerflow_trace_id")
 
 
 def test_stream_preserves_caller_metadata_overrides(monkeypatch):

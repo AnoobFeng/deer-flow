@@ -231,6 +231,7 @@ def test_task_tool_emits_running_and_completed_events(monkeypatch):
     assert captured["task_id"] == "tc-123"
     assert captured["executor_kwargs"]["thread_id"] == "thread-1"
     assert captured["executor_kwargs"]["parent_model"] == "ark-model"
+    assert captured["executor_kwargs"]["trace_id"] == "trace-1"
     assert captured["executor_kwargs"]["config"].max_turns == config.max_turns
     # Skills are no longer appended to system_prompt; they are loaded per-session
     # by SubagentExecutor and injected as conversation items (Codex pattern).
@@ -241,6 +242,44 @@ def test_task_tool_emits_running_and_completed_events(monkeypatch):
     event_types = [e["type"] for e in events]
     assert event_types == ["task_started", "task_running", "task_running", "task_completed"]
     assert events[-1]["result"] == "all done"
+
+
+def test_task_tool_prefers_deerflow_trace_id(monkeypatch):
+    config = _make_subagent_config()
+    runtime = _make_runtime()
+    runtime.context["deerflow_trace_id"] = "deerflow-trace-1"
+    runtime.config["metadata"]["deerflow_trace_id"] = "metadata-trace-1"
+    events = []
+    captured = {}
+
+    class DummyExecutor:
+        def __init__(self, **kwargs):
+            captured["executor_kwargs"] = kwargs
+
+        def execute_async(self, prompt, task_id=None):
+            return task_id or "generated-task-id"
+
+    monkeypatch.setattr(task_tool_module, "SubagentStatus", FakeSubagentStatus)
+    monkeypatch.setattr(task_tool_module, "SubagentExecutor", DummyExecutor)
+    monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
+    monkeypatch.setattr(
+        task_tool_module,
+        "get_background_task_result",
+        lambda _: _make_result(FakeSubagentStatus.COMPLETED, result="done"),
+    )
+    monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: events.append)
+    monkeypatch.setattr(task_tool_module.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr("deerflow.tools.get_available_tools", MagicMock(return_value=[]))
+
+    _run_task_tool(
+        runtime=runtime,
+        description="trace",
+        prompt="work",
+        subagent_type="general-purpose",
+        tool_call_id="tc-trace",
+    )
+
+    assert captured["executor_kwargs"]["trace_id"] == "deerflow-trace-1"
 
 
 def test_task_tool_propagates_tool_groups_to_subagent(monkeypatch):
