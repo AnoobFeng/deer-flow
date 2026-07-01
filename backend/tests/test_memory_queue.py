@@ -51,6 +51,7 @@ def test_process_queue_forwards_correction_flag_to_updater() -> None:
         correction_detected=True,
         reinforcement_detected=False,
         user_id=None,
+        deerflow_trace_id=None,
     )
 
 
@@ -92,6 +93,7 @@ def test_process_queue_forwards_reinforcement_flag_to_updater() -> None:
         correction_detected=False,
         reinforcement_detected=True,
         user_id=None,
+        deerflow_trace_id=None,
     )
 
 
@@ -235,6 +237,7 @@ def test_process_queue_updates_different_agents_in_same_thread_separately() -> N
                 correction_detected=False,
                 reinforcement_detected=False,
                 user_id=None,
+                deerflow_trace_id=None,
             ),
             call(
                 messages=["agent-b"],
@@ -243,6 +246,34 @@ def test_process_queue_updates_different_agents_in_same_thread_separately() -> N
                 correction_detected=False,
                 reinforcement_detected=False,
                 user_id=None,
+                deerflow_trace_id=None,
             ),
         ]
+    )
+
+
+def test_process_queue_forwards_deerflow_trace_id_to_updater() -> None:
+    queue = MemoryUpdateQueue()
+    queue._queue = [
+        ConversationContext(
+            thread_id="thread-1",
+            messages=["conversation"],
+            agent_name="lead_agent",
+            deerflow_trace_id="trace-memory-1",
+        )
+    ]
+    mock_updater = MagicMock()
+    mock_updater.update_memory.return_value = True
+
+    with patch("deerflow.agents.memory.updater.MemoryUpdater", return_value=mock_updater):
+        queue._process_queue()
+
+    mock_updater.update_memory.assert_called_once_with(
+        messages=["conversation"],
+        thread_id="thread-1",
+        agent_name="lead_agent",
+        correction_detected=False,
+        reinforcement_detected=False,
+        user_id=None,
+        deerflow_trace_id="trace-memory-1",
     )

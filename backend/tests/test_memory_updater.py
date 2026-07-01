@@ -1200,3 +1200,42 @@ class TestUserIdForwarding:
         mock_load.assert_called_once_with(None, user_id="user-99")
         save_call = mock_storage.save.call_args
         assert save_call.kwargs.get("user_id") == "user-99" or (len(save_call.args) > 2 and save_call.args[2] == "user-99")
+
+    def test_sync_update_injects_deerflow_trace_metadata_when_langfuse_enabled(self, monkeypatch):
+        monkeypatch.setenv("LANGFUSE_TRACING", "true")
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+        from deerflow.config.tracing_config import reset_tracing_config
+
+        reset_tracing_config()
+        updater = MemoryUpdater(model_name="memory-model")
+        valid_json = '{"user": {}, "history": {}, "newFacts": [], "factsToRemove": []}'
+        model = self._make_mock_model(valid_json)
+        mock_storage = MagicMock()
+        mock_storage.save = MagicMock(return_value=True)
+
+        try:
+            with (
+                patch.object(updater, "_get_model", return_value=model),
+                patch("deerflow.agents.memory.updater.get_memory_config", return_value=_memory_config(enabled=True)),
+                patch("deerflow.agents.memory.updater.get_memory_data", return_value=_make_memory()),
+                patch("deerflow.agents.memory.updater.get_memory_storage", return_value=mock_storage),
+            ):
+                msg = MagicMock()
+                msg.type = "human"
+                msg.content = "Hello"
+                ai_msg = MagicMock()
+                ai_msg.type = "ai"
+                ai_msg.content = "Hi"
+                ai_msg.tool_calls = []
+                result = updater.update_memory([msg, ai_msg], thread_id="thread-memory", user_id="user-42", deerflow_trace_id="memory-trace-1")
+        finally:
+            reset_tracing_config()
+
+        assert result is True
+        invoke_config = model.invoke.call_args.kwargs["config"]
+        metadata = invoke_config["metadata"]
+        assert metadata["deerflow_trace_id"] == "memory-trace-1"
+        assert metadata["langfuse_session_id"] == "thread-memory"
+        assert metadata["langfuse_user_id"] == "user-42"
+        assert metadata["langfuse_trace_name"] == "memory_agent"

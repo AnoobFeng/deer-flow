@@ -555,6 +555,20 @@ A terminal-native UI over the embedded harness, exposed as the `deerflow` consol
 
 **Tests**: `tests/test_tui_*.py` — pure layers via plain pytest, the app/palette/overlays via Textual's pilot harness with a fake in-process session, and `test_tui_persistence.py` for the `threads_meta` round-trip.
 
+### Request Trace Context (`packages/harness/deerflow/trace_context.py`)
+
+Gateway request trace correlation is controlled by `logging.enhance.enabled`.
+When enabled, `app.gateway.trace_middleware.TraceMiddleware` binds one request-level
+trace id per HTTP request, inheriting inbound `X-Trace-Id` when present or generating
+a new id otherwise. The middleware writes the final value to every HTTP response at
+`http.response.start`, which covers SSE / streaming responses without consuming the
+body. The same ContextVar value is injected into enhanced log records as `trace_id`
+and into Langfuse metadata as `deerflow_trace_id`.
+
+`deerflow_trace_id` is a DeerFlow correlation metadata key, not Langfuse's native
+trace id and not a DeerFlow `run_id`. Keep the existing subagent `trace_id` field
+separate: that short id is still only for subagent execution logs/status.
+
 ### Tracing System (`packages/harness/deerflow/tracing/`)
 
 LangSmith and Langfuse are both supported. The wiring lives in two layers:
@@ -570,6 +584,7 @@ LangSmith and Langfuse are both supported. The wiring lives in two layers:
 | `langfuse_user_id`    | `get_effective_user_id()` (`default` in no-auth); for subagents, captured from `runtime.context` at `task_tool` time via `resolve_runtime_user_id()` |
 | `langfuse_trace_name` | `RunRecord.assistant_id` / client `agent_name` (defaults to `lead-agent`); for subagents, `subagent:<name>` (lowercased, `_` → `-`) |
 | `langfuse_tags`       | `env:<DEER_FLOW_ENV>` + `model:<model_name>`  |
+| `deerflow_trace_id`   | Current request/entry trace id from `deerflow.trace_context`; matches `X-Trace-Id` for enhanced Gateway HTTP requests |
 
 Returns `{}` when Langfuse is not in the enabled providers — LangSmith-only deployments are unaffected. Set `DEER_FLOW_ENV` (or `ENVIRONMENT`) to tag traces by deployment environment. Tests live in `tests/test_tracing_factory.py`, `tests/test_tracing_metadata.py`, `tests/test_worker_langfuse_metadata.py`, `tests/test_client_langfuse_metadata.py`, and `tests/test_subagent_executor.py::TestSubagentTracingWiring`.
 
@@ -577,6 +592,7 @@ Returns `{}` when Langfuse is not in the enabled providers — LangSmith-only de
 
 **`config.yaml`** key sections:
 - `models[]` - LLM configs with `use` class path, `supports_thinking`, `supports_vision`, provider-specific fields
+- `logging.enhance` - Optional request trace correlation (`enabled`, `format`) for Gateway `X-Trace-Id`, log `trace_id`, and Langfuse `deerflow_trace_id`
 - vLLM reasoning models should use `deerflow.models.vllm_provider:VllmChatModel`; for Qwen-style parsers prefer `when_thinking_enabled.extra_body.chat_template_kwargs.enable_thinking`, and DeerFlow will also normalize the older `thinking` alias
 - `tools[]` - Tool configs with `use` variable path and `group`
 - `tool_groups[]` - Logical groupings for tools

@@ -2074,7 +2074,7 @@ class TestSubagentTracingWiring:
         yield
         reset_tracing_config()
 
-    def _make_executor(self, classes, *, user_id=None, name="general-purpose", parent_model="test-model"):
+    def _make_executor(self, classes, *, user_id=None, name="general-purpose", parent_model="test-model", deerflow_trace_id=None):
         SubagentExecutor = classes["SubagentExecutor"]
         SubagentConfig = classes["SubagentConfig"]
         config = SubagentConfig(
@@ -2091,6 +2091,7 @@ class TestSubagentTracingWiring:
             thread_id="thread-trace-1",
             trace_id="trace-1",
             user_id=user_id,
+            deerflow_trace_id=deerflow_trace_id,
         )
 
     @pytest.mark.anyio
@@ -2148,7 +2149,7 @@ class TestSubagentTracingWiring:
         sentinel = _Sentinel()
         monkeypatch.setattr(executor_module, "build_tracing_callbacks", lambda: [sentinel])
 
-        executor = self._make_executor(classes, user_id="alice", name="general_purpose")
+        executor = self._make_executor(classes, user_id="alice", name="general_purpose", deerflow_trace_id="gateway-trace-sub")
         fake_agent = _FakeStreamAgent()
         monkeypatch.setattr(executor, "_build_initial_state", self._noop_build_initial_state)
         monkeypatch.setattr(executor, "_create_agent", lambda *a, **kw: fake_agent)
@@ -2161,6 +2162,8 @@ class TestSubagentTracingWiring:
         # Underscores are normalized to hyphens so the trace name matches the
         # lead-agent naming shape.
         assert metadata.get("langfuse_trace_name") == "subagent:general-purpose"
+        assert metadata.get("deerflow_trace_id") == "gateway-trace-sub"
+        assert fake_agent.captured_context.get("deerflow_trace_id") == "gateway-trace-sub"
         tags = metadata.get("langfuse_tags") or []
         assert any(t.startswith("model:") for t in tags), "model tag must be emitted for cost attribution"
 

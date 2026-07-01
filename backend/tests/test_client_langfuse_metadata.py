@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from deerflow.client import DeerFlowClient
+from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, request_trace_context
 
 
 class _FakeAgent:
@@ -102,6 +103,7 @@ def test_stream_injects_langfuse_metadata_when_enabled(monkeypatch):
     metadata = config.get("metadata") or {}
     assert metadata.get("langfuse_session_id") == "thread-client-1"
     assert metadata.get("langfuse_trace_name") == "lead-agent"
+    assert metadata.get(DEERFLOW_TRACE_METADATA_KEY)
     # Default no-auth context falls back to ``"default"`` user.
     assert metadata.get("langfuse_user_id") in {"default", "test-user-autouse"}
     callbacks = config.get("callbacks") or []
@@ -144,16 +146,19 @@ def test_stream_preserves_caller_metadata_overrides(monkeypatch):
     def patched_get_runnable_config(self, thread_id, **overrides):
         cfg = original_get_config(self, thread_id, **overrides)
         cfg["metadata"] = {
+            DEERFLOW_TRACE_METADATA_KEY: "explicit-client-trace",
             "langfuse_session_id": "explicit-session-override",
             "langfuse_user_id": "explicit-user",
         }
         return cfg
 
     monkeypatch.setattr(DeerFlowClient, "_get_runnable_config", patched_get_runnable_config)
-    list(client.stream("hi", thread_id="thread-client-3"))
+    with request_trace_context("client-trace-3"):
+        list(client.stream("hi", thread_id="thread-client-3"))
 
     metadata = captured["config"].get("metadata") or {}
     assert metadata["langfuse_session_id"] == "explicit-session-override"
     assert metadata["langfuse_user_id"] == "explicit-user"
+    assert metadata[DEERFLOW_TRACE_METADATA_KEY] == "explicit-client-trace"
     # ``trace_name`` was not supplied by caller so the worker still fills it.
     assert metadata["langfuse_trace_name"] == "lead-agent"

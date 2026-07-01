@@ -44,6 +44,7 @@ from deerflow.models import create_chat_model
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.skills.storage import get_or_new_skill_storage
 from deerflow.tools.builtins.tool_search import assemble_deferred_tools
+from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY, ensure_trace_context, get_current_trace_id
 from deerflow.tracing import build_tracing_callbacks, inject_langfuse_metadata
 from deerflow.uploads.manager import (
     claim_unique_filename,
@@ -519,6 +520,17 @@ class DeerFlowClient:
         thread_id: str | None = None,
         **kwargs,
     ) -> Generator[StreamEvent, None, None]:
+        """Stream a conversation turn with a DeerFlow request trace context."""
+        with ensure_trace_context():
+            yield from self._stream_without_trace_context(message, thread_id=thread_id, **kwargs)
+
+    def _stream_without_trace_context(
+        self,
+        message: str,
+        *,
+        thread_id: str | None = None,
+        **kwargs,
+    ) -> Generator[StreamEvent, None, None]:
         """Stream a conversation turn, yielding events incrementally.
 
         Each call sends one user message and yields events until the agent
@@ -610,6 +622,7 @@ class DeerFlowClient:
             config["callbacks"] = [*existing_callbacks, *tracing_callbacks]
 
         configurable = config.get("configurable") or {}
+        deerflow_trace_id = get_current_trace_id()
         inject_langfuse_metadata(
             config,
             thread_id=thread_id,
@@ -617,12 +630,15 @@ class DeerFlowClient:
             assistant_id=self._agent_name or "lead-agent",
             model_name=configurable.get("model_name") or self._model_name,
             environment=self._environment or os.environ.get("DEER_FLOW_ENV") or os.environ.get("ENVIRONMENT"),
+            deerflow_trace_id=deerflow_trace_id,
         )
 
         self._ensure_agent(config)
 
         state: dict[str, Any] = {"messages": [HumanMessage(content=message)]}
         context = {"thread_id": thread_id}
+        if deerflow_trace_id:
+            context[DEERFLOW_TRACE_METADATA_KEY] = deerflow_trace_id
         if self._agent_name:
             context["agent_name"] = self._agent_name
 

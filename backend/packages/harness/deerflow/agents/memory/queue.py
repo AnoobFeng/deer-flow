@@ -21,6 +21,7 @@ class ConversationContext:
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     agent_name: str | None = None
     user_id: str | None = None
+    deerflow_trace_id: str | None = None
     correction_detected: bool = False
     reinforcement_detected: bool = False
 
@@ -55,6 +56,7 @@ class MemoryUpdateQueue:
         messages: list[Any],
         agent_name: str | None = None,
         user_id: str | None = None,
+        deerflow_trace_id: str | None = None,
         correction_detected: bool = False,
         reinforcement_detected: bool = False,
     ) -> None:
@@ -67,6 +69,8 @@ class MemoryUpdateQueue:
             user_id: The user ID captured at enqueue time. Stored in ConversationContext so it
                 survives the threading.Timer boundary (ContextVar does not propagate across
                 raw threads).
+            deerflow_trace_id: Request trace id captured at enqueue time so the
+                later Timer thread can attach it to memory LLM tracing metadata.
             correction_detected: Whether recent turns include an explicit correction signal.
             reinforcement_detected: Whether recent turns include a positive reinforcement signal.
         """
@@ -80,6 +84,7 @@ class MemoryUpdateQueue:
                 messages=messages,
                 agent_name=agent_name,
                 user_id=user_id,
+                deerflow_trace_id=deerflow_trace_id,
                 correction_detected=correction_detected,
                 reinforcement_detected=reinforcement_detected,
             )
@@ -93,6 +98,7 @@ class MemoryUpdateQueue:
         messages: list[Any],
         agent_name: str | None = None,
         user_id: str | None = None,
+        deerflow_trace_id: str | None = None,
         correction_detected: bool = False,
         reinforcement_detected: bool = False,
     ) -> None:
@@ -107,6 +113,7 @@ class MemoryUpdateQueue:
                 messages=messages,
                 agent_name=agent_name,
                 user_id=user_id,
+                deerflow_trace_id=deerflow_trace_id,
                 correction_detected=correction_detected,
                 reinforcement_detected=reinforcement_detected,
             )
@@ -121,6 +128,7 @@ class MemoryUpdateQueue:
         messages: list[Any],
         agent_name: str | None,
         user_id: str | None,
+        deerflow_trace_id: str | None,
         correction_detected: bool,
         reinforcement_detected: bool,
     ) -> None:
@@ -136,6 +144,7 @@ class MemoryUpdateQueue:
             messages=messages,
             agent_name=agent_name,
             user_id=user_id,
+            deerflow_trace_id=deerflow_trace_id,
             correction_detected=merged_correction_detected,
             reinforcement_detected=merged_reinforcement_detected,
         )
@@ -197,6 +206,7 @@ class MemoryUpdateQueue:
                         correction_detected=context.correction_detected,
                         reinforcement_detected=context.reinforcement_detected,
                         user_id=context.user_id,
+                        deerflow_trace_id=context.deerflow_trace_id,
                     )
                     if success:
                         logger.info("Memory updated successfully for thread %s", context.thread_id)
