@@ -377,7 +377,7 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # snapshot the flag from the startup AppConfig instead of reading live; a
     # runtime toggle would otherwise leave the log formatter (installed once by
     # configure_logging() at lifespan startup) out of sync with the middleware.
-    app.add_middleware(TraceMiddleware, enabled=resolve_trace_enabled(get_app_config()))
+    app.add_middleware(TraceMiddleware, enabled=_resolve_trace_enabled_for_app_construction())
 
     # Include routers
     # Models API is mounted at /api/models
@@ -438,6 +438,16 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
         return {"status": "healthy", "service": "deer-flow-gateway"}
 
     return app
+
+
+def _resolve_trace_enabled_for_app_construction() -> bool:
+    """Resolve the trace middleware flag without making imports require config.yaml."""
+    try:
+        return resolve_trace_enabled(get_app_config())
+    except FileNotFoundError:
+        # Startup lifespan still performs strict config loading before serving.
+        logger.debug("config.yaml not found while constructing Gateway app; TraceMiddleware disabled for this app instance")
+        return False
 
 
 # Create app instance for uvicorn

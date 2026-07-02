@@ -158,3 +158,23 @@ def test_resolve_trace_enabled_defaults_to_false_when_fields_missing() -> None:
     assert resolve_trace_enabled(SimpleNamespace()) is False
     assert resolve_trace_enabled(SimpleNamespace(logging=None)) is False
     assert resolve_trace_enabled(SimpleNamespace(logging=SimpleNamespace(enhance=None))) is False
+
+
+def test_gateway_app_construction_trace_flag_defaults_false_when_config_missing(monkeypatch) -> None:
+    import app.gateway.app as gateway_app
+
+    def missing_config():
+        raise FileNotFoundError("no config")
+
+    monkeypatch.setattr(gateway_app, "get_app_config", missing_config)
+
+    assert gateway_app._resolve_trace_enabled_for_app_construction() is False
+
+
+def test_gateway_app_construction_trace_flag_uses_config_snapshot(monkeypatch) -> None:
+    import app.gateway.app as gateway_app
+
+    config = SimpleNamespace(logging=SimpleNamespace(enhance=SimpleNamespace(enabled=True)))
+    monkeypatch.setattr(gateway_app, "get_app_config", lambda: config)
+
+    assert gateway_app._resolve_trace_enabled_for_app_construction() is True
