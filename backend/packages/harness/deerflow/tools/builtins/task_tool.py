@@ -289,11 +289,7 @@ async def task_tool(
     oauth_provider = parent_context.get("oauth_provider")
     oauth_id = parent_context.get("oauth_id")
     run_id = parent_context.get("run_id")
-    deerflow_trace_id = (
-        normalize_trace_id(parent_context.get(DEERFLOW_TRACE_METADATA_KEY))
-        or normalize_trace_id(metadata.get(DEERFLOW_TRACE_METADATA_KEY))
-        or get_current_trace_id()
-    )
+    deerflow_trace_id = normalize_trace_id(parent_context.get(DEERFLOW_TRACE_METADATA_KEY)) or normalize_trace_id(metadata.get(DEERFLOW_TRACE_METADATA_KEY)) or get_current_trace_id()
 
     parent_available_skills = metadata.get("available_skills")
     if parent_available_skills is not None:

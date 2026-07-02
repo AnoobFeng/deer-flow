@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from deerflow.agents.memory.prompt import format_conversation_for_update
@@ -12,6 +13,7 @@ from deerflow.agents.memory.updater import (
     update_memory_fact,
 )
 from deerflow.config.memory_config import MemoryConfig
+from deerflow.trace_context import get_current_trace_id, request_trace_context
 
 
 def _make_memory(facts: list[dict[str, object]] | None = None) -> dict[str, object]:
@@ -1239,3 +1241,112 @@ class TestUserIdForwarding:
         assert metadata["langfuse_session_id"] == "thread-memory"
         assert metadata["langfuse_user_id"] == "user-42"
         assert metadata["langfuse_trace_name"] == "memory_agent"
+
+
+class TestSyncUpdateBindsTraceContextVar:
+    """Regression: _do_update_memory_sync must bind ``deerflow_trace_id`` into the
+    request-trace ContextVar for the duration of the update.
+
+    The memory pipeline plumbs ``deerflow_trace_id`` through ``ConversationContext``
+    precisely because ContextVar does not propagate to ``threading.Timer`` threads
+    or ``ThreadPoolExecutor.submit(...)`` workers. Langfuse metadata is already
+    correct because it takes an explicit function argument, but the enhanced-log
+    ``TraceContextFilter`` only reads the ContextVar — so without this bind, every
+    log record emitted from the Timer/Executor path (model-error logs, tracing
+    callback logs) shows ``trace_id=-`` despite the correct id being available.
+    """
+
+    @staticmethod
+    def _make_updater_with_capturing_model(captured: list[str | None]) -> tuple[MemoryUpdater, MagicMock]:
+        updater = MemoryUpdater()
+
+        def _capture_and_respond(*_args, **_kwargs):
+            captured.append(get_current_trace_id())
+            response = MagicMock()
+            response.content = '{"user": {}, "history": {}, "newFacts": [], "factsToRemove": []}'
+            return response
+
+        model = MagicMock()
+        model.invoke = MagicMock(side_effect=_capture_and_respond)
+        return updater, model
+
+    @staticmethod
+    def _run_sync_update_in_fresh_thread(updater: MemoryUpdater, model: MagicMock, *, deerflow_trace_id: str | None) -> bool:
+        """Run ``_do_update_memory_sync`` in a bare ``threading.Thread`` to guarantee
+        no ContextVar inheritance from the pytest main thread (mirrors the Timer /
+        Executor worker execution model)."""
+        results: list[bool] = []
+
+        def _target() -> None:
+            with (
+                patch.object(updater, "_get_model", return_value=model),
+                patch("deerflow.agents.memory.updater.get_memory_config", return_value=_memory_config(enabled=True)),
+                patch("deerflow.agents.memory.updater.get_memory_data", return_value=_make_memory()),
+                patch("deerflow.agents.memory.updater.get_memory_storage", return_value=MagicMock(save=MagicMock(return_value=True))),
+            ):
+                msg = MagicMock()
+                msg.type = "human"
+                msg.content = "Hello"
+                ai_msg = MagicMock()
+                ai_msg.type = "ai"
+                ai_msg.content = "Hi"
+                results.append(
+                    updater._do_update_memory_sync(
+                        messages=[msg, ai_msg],
+                        deerflow_trace_id=deerflow_trace_id,
+                    )
+                )
+
+        thread = threading.Thread(target=_target)
+        thread.start()
+        thread.join()
+        return results[0]
+
+    def test_binds_deerflow_trace_id_into_contextvar(self) -> None:
+        captured: list[str | None] = []
+        updater, model = self._make_updater_with_capturing_model(captured)
+
+        result = self._run_sync_update_in_fresh_thread(updater, model, deerflow_trace_id="trace-mem-xyz")
+
+        assert result is True
+        assert captured == ["trace-mem-xyz"]
+
+    def test_none_trace_id_does_not_fabricate_id(self) -> None:
+        """When no trace_id is provided the ContextVar must stay unbound —
+        fabricating a fresh id would produce log records with a bogus 'correlated'
+        id that has no relationship to any real request."""
+        captured: list[str | None] = []
+        updater, model = self._make_updater_with_capturing_model(captured)
+
+        result = self._run_sync_update_in_fresh_thread(updater, model, deerflow_trace_id=None)
+
+        assert result is True
+        assert captured == [None]
+
+    def test_restores_outer_contextvar_after_return(self) -> None:
+        """The binding must be scoped to the function; a pre-existing outer trace
+        id in the caller's context must be intact after the call returns."""
+        captured: list[str | None] = []
+        updater, model = self._make_updater_with_capturing_model(captured)
+
+        with (
+            request_trace_context("outer-trace"),
+            patch.object(updater, "_get_model", return_value=model),
+            patch("deerflow.agents.memory.updater.get_memory_config", return_value=_memory_config(enabled=True)),
+            patch("deerflow.agents.memory.updater.get_memory_data", return_value=_make_memory()),
+            patch("deerflow.agents.memory.updater.get_memory_storage", return_value=MagicMock(save=MagicMock(return_value=True))),
+        ):
+            msg = MagicMock()
+            msg.type = "human"
+            msg.content = "Hello"
+            ai_msg = MagicMock()
+            ai_msg.type = "ai"
+            ai_msg.content = "Hi"
+
+            updater._do_update_memory_sync(
+                messages=[msg, ai_msg],
+                deerflow_trace_id="inner-trace",
+            )
+
+            assert captured == ["inner-trace"]
+            assert get_current_trace_id() == "outer-trace"

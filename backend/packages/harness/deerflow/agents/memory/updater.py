@@ -10,6 +10,7 @@ import math
 import os
 import re
 import uuid
+from contextlib import nullcontext
 from typing import Any
 
 from deerflow.agents.memory.prompt import (
@@ -23,6 +24,7 @@ from deerflow.agents.memory.storage import (
 )
 from deerflow.config.memory_config import get_memory_config
 from deerflow.models import create_chat_model
+from deerflow.trace_context import request_trace_context
 from deerflow.tracing import inject_langfuse_metadata
 
 logger = logging.getLogger(__name__)
@@ -511,44 +513,53 @@ class MemoryUpdater:
         lead agent) is never touched — no cross-loop connection reuse is
         possible.
         """
-        try:
-            prepared = self._prepare_update_prompt(
-                messages=messages,
-                agent_name=agent_name,
-                correction_detected=correction_detected,
-                reinforcement_detected=reinforcement_detected,
-                user_id=user_id,
-            )
-            if prepared is None:
-                return False
+        # Callers may run us in a ``threading.Timer`` thread or an
+        # ``_SYNC_MEMORY_UPDATER_EXECUTOR`` worker — neither propagates the
+        # request-trace ContextVar. Rebind it here from the explicitly plumbed
+        # ``deerflow_trace_id`` so ``TraceContextFilter`` attaches the correct
+        # trace id to every log record emitted below (including model-invoke
+        # tracing-callback logs). ``nullcontext`` when unknown avoids
+        # fabricating a bogus id via ``request_trace_context(None)``.
+        trace_ctx = request_trace_context(deerflow_trace_id) if deerflow_trace_id else nullcontext()
+        with trace_ctx:
+            try:
+                prepared = self._prepare_update_prompt(
+                    messages=messages,
+                    agent_name=agent_name,
+                    correction_detected=correction_detected,
+                    reinforcement_detected=reinforcement_detected,
+                    user_id=user_id,
+                )
+                if prepared is None:
+                    return False
 
-            current_memory, prompt = prepared
-            model_name = self._resolve_model_name()
-            model = self._get_model()
-            invoke_config: dict[str, Any] = {"run_name": "memory_agent"}
-            inject_langfuse_metadata(
-                invoke_config,
-                thread_id=thread_id,
-                user_id=user_id,
-                assistant_id="memory_agent",
-                model_name=model_name,
-                environment=os.environ.get("DEER_FLOW_ENV") or os.environ.get("ENVIRONMENT"),
-                deerflow_trace_id=deerflow_trace_id,
-            )
-            response = model.invoke(prompt, config=invoke_config)
-            return self._finalize_update(
-                current_memory=current_memory,
-                response_content=response.content,
-                thread_id=thread_id,
-                agent_name=agent_name,
-                user_id=user_id,
-            )
-        except json.JSONDecodeError as e:
-            logger.warning("Failed to parse LLM response for memory update: %s", e)
-            return False
-        except Exception as e:
-            logger.exception("Memory update failed: %s", e)
-            return False
+                current_memory, prompt = prepared
+                model_name = self._resolve_model_name()
+                model = self._get_model()
+                invoke_config: dict[str, Any] = {"run_name": "memory_agent"}
+                inject_langfuse_metadata(
+                    invoke_config,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    assistant_id="memory_agent",
+                    model_name=model_name,
+                    environment=os.environ.get("DEER_FLOW_ENV") or os.environ.get("ENVIRONMENT"),
+                    deerflow_trace_id=deerflow_trace_id,
+                )
+                response = model.invoke(prompt, config=invoke_config)
+                return self._finalize_update(
+                    current_memory=current_memory,
+                    response_content=response.content,
+                    thread_id=thread_id,
+                    agent_name=agent_name,
+                    user_id=user_id,
+                )
+            except json.JSONDecodeError as e:
+                logger.warning("Failed to parse LLM response for memory update: %s", e)
+                return False
+            except Exception as e:
+                logger.exception("Memory update failed: %s", e)
+                return False
 
     def update_memory(
         self,

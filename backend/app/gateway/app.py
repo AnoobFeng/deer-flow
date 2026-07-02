@@ -29,7 +29,7 @@ from app.gateway.routers import (
     threads,
     uploads,
 )
-from app.gateway.trace_middleware import TraceMiddleware, make_trace_enabled_getter
+from app.gateway.trace_middleware import TraceMiddleware, resolve_trace_enabled
 from deerflow.config import app_config as deerflow_app_config
 from deerflow.logging_config import DEFAULT_LOG_DATE_FORMAT, DEFAULT_LOG_FORMAT, configure_logging
 from deerflow.uploads.manager import cleanup_stale_upload_staging_files
@@ -373,7 +373,11 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Request trace correlation: when logging.enhance.enabled=true, bind one
     # trace id per Gateway HTTP request and write it to response start headers.
-    app.add_middleware(TraceMiddleware, enabled_getter=make_trace_enabled_getter(get_app_config))
+    # `logging` is registered as restart-required (see reload_boundary.py) so we
+    # snapshot the flag from the startup AppConfig instead of reading live; a
+    # runtime toggle would otherwise leave the log formatter (installed once by
+    # configure_logging() at lifespan startup) out of sync with the middleware.
+    app.add_middleware(TraceMiddleware, enabled=resolve_trace_enabled(get_app_config()))
 
     # Include routers
     # Models API is mounted at /api/models

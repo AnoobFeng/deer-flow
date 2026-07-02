@@ -3,11 +3,13 @@
 import logging
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from deerflow.config.memory_config import get_memory_config
+from deerflow.trace_context import request_trace_context
 
 logger = logging.getLogger(__name__)
 
@@ -197,27 +199,35 @@ class MemoryUpdateQueue:
             updater = MemoryUpdater()
 
             for context in contexts_to_process:
-                try:
-                    logger.info("Updating memory for thread %s", context.thread_id)
-                    success = updater.update_memory(
-                        messages=context.messages,
-                        thread_id=context.thread_id,
-                        agent_name=context.agent_name,
-                        correction_detected=context.correction_detected,
-                        reinforcement_detected=context.reinforcement_detected,
-                        user_id=context.user_id,
-                        deerflow_trace_id=context.deerflow_trace_id,
-                    )
-                    if success:
-                        logger.info("Memory updated successfully for thread %s", context.thread_id)
-                    else:
-                        logger.warning("Memory update skipped/failed for thread %s", context.thread_id)
-                except Exception as e:
-                    logger.error("Error updating memory for thread %s: %s", context.thread_id, e)
+                # Rebind the request-trace ContextVar from the value captured at
+                # enqueue time so ``TraceContextFilter`` attaches the correct
+                # trace id to every log record emitted below (this Timer thread
+                # does not inherit the enqueue-thread's ContextVar). Each
+                # iteration is scoped independently so id A does not leak into
+                # id B's logs.
+                trace_ctx = request_trace_context(context.deerflow_trace_id) if context.deerflow_trace_id else nullcontext()
+                with trace_ctx:
+                    try:
+                        logger.info("Updating memory for thread %s", context.thread_id)
+                        success = updater.update_memory(
+                            messages=context.messages,
+                            thread_id=context.thread_id,
+                            agent_name=context.agent_name,
+                            correction_detected=context.correction_detected,
+                            reinforcement_detected=context.reinforcement_detected,
+                            user_id=context.user_id,
+                            deerflow_trace_id=context.deerflow_trace_id,
+                        )
+                        if success:
+                            logger.info("Memory updated successfully for thread %s", context.thread_id)
+                        else:
+                            logger.warning("Memory update skipped/failed for thread %s", context.thread_id)
+                    except Exception as e:
+                        logger.error("Error updating memory for thread %s: %s", context.thread_id, e)
 
-                # Small delay between updates to avoid rate limiting
-                if len(contexts_to_process) > 1:
-                    time.sleep(0.5)
+                    # Small delay between updates to avoid rate limiting
+                    if len(contexts_to_process) > 1:
+                        time.sleep(0.5)
 
         finally:
             with self._lock:

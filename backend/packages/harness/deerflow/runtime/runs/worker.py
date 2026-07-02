@@ -96,8 +96,6 @@ def _install_runtime_context(config: dict, runtime_context: dict[str, Any]) -> N
             existing_context.setdefault(DEERFLOW_TRACE_METADATA_KEY, runtime_context[DEERFLOW_TRACE_METADATA_KEY])
         if "app_config" in runtime_context:
             existing_context["app_config"] = runtime_context["app_config"]
-        if "__run_journal" in runtime_context:
-            existing_context["__run_journal"] = runtime_context["__run_journal"]
         return
 
     config["context"] = dict(runtime_context)

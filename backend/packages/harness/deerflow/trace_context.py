@@ -25,13 +25,24 @@ def generate_trace_id() -> str:
 
 
 def normalize_trace_id(value: object) -> str | None:
-    """Return a safe trace id string, or ``None`` when *value* is unusable."""
+    """Return a safe trace id string, or ``None`` when *value* is unusable.
+
+    Only printable ASCII (0x20-0x7E) is accepted. Codepoints above 0x7E are
+    rejected because the trace id round-trips through HTTP response headers,
+    which Starlette encodes as latin-1: codepoints > 0xFF raise
+    ``UnicodeEncodeError`` inside ``MutableHeaders.__setitem__`` (forcing a
+    500 before the response body is even dispatched), and C1 controls
+    (0x80-0x9F) technically encode but are stripped or rejected by hardened
+    intermediaries (nginx / envoy / cloudfront), silently breaking the
+    response. C0 controls (< 0x20) and DEL (0x7F) are rejected for the same
+    header-safety reason plus log-injection defense.
+    """
     if not isinstance(value, str):
         return None
     trace_id = value.strip()
     if not trace_id or len(trace_id) > _MAX_TRACE_ID_LENGTH:
         return None
-    if any(ord(ch) < 32 or ord(ch) == 127 for ch in trace_id):
+    if any(ord(ch) < 32 or ord(ch) > 126 for ch in trace_id):
         return None
     return trace_id
 
