@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def _default_file_io_workers() -> int:
-    raw = os.getenv("DEERFLOW_FILE_IO_WORKERS")
+    raw = os.getenv("DEER_FLOW_FILE_IO_WORKERS")
     if raw:
         try:
             workers = int(raw)
@@ -23,7 +23,7 @@ def _default_file_io_workers() -> int:
                 return workers
         except ValueError:
             pass
-        logger.warning("Invalid DEERFLOW_FILE_IO_WORKERS value; using default file IO worker count")
+        logger.warning("Invalid DEER_FLOW_FILE_IO_WORKERS value; using default file IO worker count")
     return min(32, (os.cpu_count() or 1) + 4)
 
 
