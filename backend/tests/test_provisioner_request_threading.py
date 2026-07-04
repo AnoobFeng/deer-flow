@@ -60,7 +60,7 @@ def _service(sandbox_id: str):
 
 @contextmanager
 def _detect_provisioner_blocking_io(provisioner_module):
-    detector = BlockBuster(scanned_modules=[provisioner_module])
+    detector = BlockBuster(scanned_modules=[provisioner_module.__name__])
     detector.activate()
     try:
         yield
