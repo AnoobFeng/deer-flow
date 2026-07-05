@@ -143,10 +143,7 @@ export function HumanInputCard({
           </div>
 
           <div className="text-foreground text-sm leading-6">
-            <MarkdownContent
-              content={request.question}
-              isLoading={false}
-            />
+            <MarkdownContent content={request.question} isLoading={false} />
           </div>
 
           {options.length > 0 ? (
