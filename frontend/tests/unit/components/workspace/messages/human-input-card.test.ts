@@ -62,7 +62,7 @@ describe("HumanInputCard", () => {
     expect(html).toContain("disabled");
   });
 
-  it("preserves line breaks in free-text clarification prompts", () => {
+  it("renders markdown in question field (bold, lists)", () => {
     const html = renderCard({
       request: {
         ...request,
@@ -73,9 +73,10 @@ describe("HumanInputCard", () => {
       },
     });
 
-    expect(html).toContain("whitespace-pre-wrap");
-    expect(html).toContain("1. **题材/类型**");
-    expect(html).toContain("2. **篇幅**");
+    expect(html).toContain("题材/类型");
+    expect(html).toContain("篇幅");
+    expect(html).not.toContain("**题材/类型**");
+    expect(html).not.toContain("**篇幅**");
   });
 });
 
