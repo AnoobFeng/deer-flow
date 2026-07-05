@@ -529,6 +529,17 @@ export const enUS: Translations = {
     skillInstallTooltip: "Install skill and make it available to DeerFlow",
   },
 
+  humanInput: {
+    answered: "Answered",
+    pending: "Sending...",
+    readOnly: "Read only",
+    otherLabel: "Other answer",
+    otherPlaceholder: "Type another answer...",
+    submit: "Submit",
+    emptyError: "Enter an answer before submitting.",
+    answeredValue: (value: string) => `Answered: ${value}`,
+  },
+
   // Subtasks
   uploads: {
     uploading: "Uploading...",

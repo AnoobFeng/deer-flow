@@ -32,6 +32,11 @@ import { Tooltip } from "@/components/workspace/tooltip";
 import { useActiveGoal } from "@/components/workspace/use-active-goal";
 import { useAgent } from "@/core/agents";
 import { useI18n } from "@/core/i18n/hooks";
+import {
+  buildHumanInputResponseText,
+  type HumanInputRequest,
+  type HumanInputResponse,
+} from "@/core/messages/human-input";
 import { useModels } from "@/core/models/hooks";
 import { useNotification } from "@/core/notification/hooks";
 import { useLocalSettings, useThreadSettings } from "@/core/settings";
@@ -168,6 +173,31 @@ export default function AgentChatPage() {
     [sendMessage, threadId, agent_name],
   );
 
+  const handleSubmitHumanInput = useCallback(
+    async (request: HumanInputRequest, response: HumanInputResponse) => {
+      let sent = false;
+      await sendMessage(
+        threadId,
+        {
+          text: buildHumanInputResponseText(request, response),
+          files: [],
+        },
+        { agent_name },
+        {
+          additionalKwargs: {
+            hide_from_ui: true,
+            human_input_response: response,
+          },
+          onSent: () => {
+            sent = true;
+          },
+        },
+      );
+      return sent;
+    },
+    [agent_name, sendMessage, threadId],
+  );
+
   const handleStop = useCallback(async () => {
     await thread.stop();
   }, [thread]);
@@ -253,6 +283,11 @@ export default function AgentChatPage() {
                   loadMoreHistory={loadMoreHistory}
                   isHistoryLoading={isHistoryLoading}
                   tokenUsageInlineMode={tokenUsageInlineMode}
+                  onSubmitHumanInput={
+                    isMock || env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
+                      ? undefined
+                      : handleSubmitHumanInput
+                  }
                 />
               </div>
 

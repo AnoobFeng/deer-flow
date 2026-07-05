@@ -33,6 +33,11 @@ import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicato
 import { useActiveGoal } from "@/components/workspace/use-active-goal";
 import { Welcome } from "@/components/workspace/welcome";
 import { useI18n } from "@/core/i18n/hooks";
+import {
+  buildHumanInputResponseText,
+  type HumanInputRequest,
+  type HumanInputResponse,
+} from "@/core/messages/human-input";
 import { useModels } from "@/core/models/hooks";
 import { useNotification } from "@/core/notification/hooks";
 import { useLocalSettings, useThreadSettings } from "@/core/settings";
@@ -167,6 +172,30 @@ export default function ChatPage() {
     },
     [sendMessage, threadId],
   );
+  const handleSubmitHumanInput = useCallback(
+    async (request: HumanInputRequest, response: HumanInputResponse) => {
+      let sent = false;
+      await sendMessage(
+        threadId,
+        {
+          text: buildHumanInputResponseText(request, response),
+          files: [],
+        },
+        undefined,
+        {
+          additionalKwargs: {
+            hide_from_ui: true,
+            human_input_response: response,
+          },
+          onSent: () => {
+            sent = true;
+          },
+        },
+      );
+      return sent;
+    },
+    [sendMessage, threadId],
+  );
   const handleStop = useCallback(async () => {
     await thread.stop();
   }, [thread]);
@@ -246,6 +275,11 @@ export default function ChatPage() {
                     !thread.isLoading
                   }
                   onRegenerateMessage={handleRegenerate}
+                  onSubmitHumanInput={
+                    isMock || env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
+                      ? undefined
+                      : handleSubmitHumanInput
+                  }
                 />
               </div>
               <div

@@ -38,6 +38,11 @@ import {
   getAgent,
 } from "@/core/agents/api";
 import { useI18n } from "@/core/i18n/hooks";
+import {
+  buildHumanInputResponseText,
+  type HumanInputRequest,
+  type HumanInputResponse,
+} from "@/core/messages/human-input";
 import { useThreadStream } from "@/core/threads/hooks";
 import { uuid } from "@/core/utils/uuid";
 import { isIMEComposing } from "@/lib/ime";
@@ -218,6 +223,35 @@ export default function NewAgentPage() {
     [agentName, sendMessage, thread.isLoading, threadId],
   );
 
+  const handleSubmitHumanInput = useCallback(
+    async (request: HumanInputRequest, response: HumanInputResponse) => {
+      if (!agentName) {
+        return false;
+      }
+
+      let sent = false;
+      await sendMessage(
+        threadId,
+        {
+          text: buildHumanInputResponseText(request, response),
+          files: [],
+        },
+        { agent_name: agentName },
+        {
+          additionalKwargs: {
+            hide_from_ui: true,
+            human_input_response: response,
+          },
+          onSent: () => {
+            sent = true;
+          },
+        },
+      );
+      return sent;
+    },
+    [agentName, sendMessage, threadId],
+  );
+
   const handleSaveAgent = useCallback(async () => {
     if (
       !agentName ||
@@ -365,6 +399,9 @@ export default function NewAgentPage() {
                 className={cn("size-full", showSaveHint ? "pt-4" : "pt-10")}
                 threadId={threadId}
                 thread={thread}
+                onSubmitHumanInput={
+                  agentName ? handleSubmitHumanInput : undefined
+                }
               />
             </div>
 

@@ -40,6 +40,11 @@ import {
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
 import { useI18n } from "@/core/i18n/hooks";
+import {
+  buildHumanInputResponseText,
+  type HumanInputRequest,
+  type HumanInputResponse,
+} from "@/core/messages/human-input";
 import { useModels } from "@/core/models/hooks";
 import type { Model } from "@/core/models/types";
 import { useLocalSettings } from "@/core/settings";
@@ -327,6 +332,7 @@ export function SidecarPanel({ className }: { className?: string }) {
       message: PromptInputMessage,
       references: SidecarReference[],
       onSent?: () => void,
+      additionalKwargs?: Record<string, unknown>,
     ) => {
       const contexts = references.map((reference) => reference.context);
       const parentConversation = buildParentConversationContext(
@@ -350,11 +356,43 @@ export function SidecarPanel({ className }: { className?: string }) {
           ...(contexts.length > 0
             ? buildReferenceMessageMetadata(contexts)
             : {}),
+          ...additionalKwargs,
         },
         onSent,
       });
     },
     [parentThread.messages, sendMessage, sidecar.parentThreadId],
+  );
+
+  const handleSubmitHumanInput = useCallback(
+    async (request: HumanInputRequest, response: HumanInputResponse) => {
+      if (!sidecar.sidecarThreadId) {
+        return false;
+      }
+
+      let sent = false;
+      const pendingReferences = [...sidecar.activeReferences];
+      await submitToSidecarThread(
+        sidecar.sidecarThreadId,
+        {
+          text: buildHumanInputResponseText(request, response),
+          files: [],
+        },
+        pendingReferences,
+        () => {
+          sent = true;
+          if (pendingReferences.length > 0) {
+            sidecar.clearActiveReferences();
+          }
+        },
+        {
+          hide_from_ui: true,
+          human_input_response: response,
+        },
+      );
+      return sent;
+    },
+    [sidecar, submitToSidecarThread],
   );
 
   useEffect(() => {
@@ -480,6 +518,11 @@ export function SidecarPanel({ className }: { className?: string }) {
             tokenUsageInlineMode={tokenUsageInlineMode}
             initialScroll="instant"
             resizeScroll="instant"
+            onSubmitHumanInput={
+              sidecar.isMock || env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"
+                ? undefined
+                : handleSubmitHumanInput
+            }
           />
         ) : (
           <ConversationEmptyState
