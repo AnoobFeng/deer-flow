@@ -5,7 +5,7 @@ import {
   Loader2Icon,
   MessageCircleQuestionMarkIcon,
 } from "lucide-react";
-import { useId, useState, type FormEvent } from "react";
+import { useId, useState, type KeyboardEvent } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,8 @@ import {
   type HumanInputResponse,
 } from "@/core/messages/human-input";
 import { cn } from "@/lib/utils";
+
+import { MarkdownContent } from "./markdown-content";
 
 export type HumanInputSubmitResult = boolean | void;
 
@@ -72,7 +74,7 @@ export function HumanInputCard({
     void submitResponse(createHumanInputOptionResponse(request, option));
   };
 
-  const handleTextSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleTextSubmit = (event: { preventDefault(): void }) => {
     event.preventDefault();
     const value = text.trim();
     if (!value) {
@@ -80,6 +82,18 @@ export function HumanInputCard({
       return;
     }
     void submitResponse(createHumanInputTextResponse(request, value));
+  };
+
+  const handleTextKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      const value = text.trim();
+      if (!value) {
+        setError(t.humanInput.emptyError);
+        return;
+      }
+      void submitResponse(createHumanInputTextResponse(request, value));
+    }
   };
 
   return (
@@ -99,9 +113,12 @@ export function HumanInputCard({
                 {request.title ?? t.toolCalls.needYourHelp}
               </h2>
               {request.context ? (
-                <p className="text-muted-foreground text-sm leading-6 break-words whitespace-pre-wrap">
-                  {request.context}
-                </p>
+                <div className="text-muted-foreground text-sm leading-6">
+                  <MarkdownContent
+                    content={request.context}
+                    isLoading={false}
+                  />
+                </div>
               ) : null}
             </div>
             {statusLabel ? (
@@ -125,9 +142,12 @@ export function HumanInputCard({
             ) : null}
           </div>
 
-          <p className="text-foreground text-sm leading-6 break-words whitespace-pre-wrap">
-            {request.question}
-          </p>
+          <div className="text-foreground text-sm leading-6">
+            <MarkdownContent
+              content={request.question}
+              isLoading={false}
+            />
+          </div>
 
           {options.length > 0 ? (
             <div className="grid gap-2" role="list">
@@ -140,7 +160,7 @@ export function HumanInputCard({
                   variant="outline"
                   onClick={() => handleOptionClick(option)}
                 >
-                  <span className="min-w-0 break-words whitespace-pre-wrap">
+                  <span className="min-w-0 wrap-break-word whitespace-pre-wrap">
                     {option.label}
                   </span>
                 </Button>
@@ -167,6 +187,7 @@ export function HumanInputCard({
                     setError("");
                   }
                 }}
+                onKeyDown={handleTextKeyDown}
               />
               <div className="flex min-h-9 flex-wrap items-center justify-between gap-2">
                 {error ? (
