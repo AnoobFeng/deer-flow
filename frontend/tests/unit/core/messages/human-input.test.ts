@@ -8,6 +8,7 @@ import {
   deriveHumanInputThreadState,
   extractHumanInputRequest,
   extractHumanInputResponse,
+  hasOpenHumanInputRequest,
   shouldClearPendingHumanInputOnThreadError,
 } from "@/core/messages/human-input";
 
@@ -111,6 +112,38 @@ test("derives answered card state from hidden human input responses", () => {
     response,
   );
   expect(state.latestOpenRequestId).toBeNull();
+});
+
+test("detects whether a thread has an open human input request", () => {
+  const requestMessage = {
+    type: "tool",
+    name: "ask_clarification",
+    content: "fallback",
+    artifact: {
+      human_input: requestPayload,
+    },
+  } as unknown as Message;
+  const responseMessage = {
+    type: "human",
+    content: "For your clarification, my answer is: staging",
+    additional_kwargs: {
+      hide_from_ui: true,
+      human_input_response: {
+        version: 1,
+        kind: "human_input_response",
+        source: "ask_clarification",
+        request_id: "clarification:call-abc",
+        response_kind: "option",
+        option_id: "option-2",
+        value: "staging",
+      },
+    },
+  } as unknown as Message;
+
+  expect(hasOpenHumanInputRequest([requestMessage])).toBe(true);
+  expect(hasOpenHumanInputRequest([requestMessage, responseMessage])).toBe(
+    false,
+  );
 });
 
 test("detects new thread errors that should unlock pending human input cards", () => {

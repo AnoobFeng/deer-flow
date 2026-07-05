@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { SidebarTrigger } from "@/components/ui/sidebar";
@@ -35,9 +35,11 @@ import { Welcome } from "@/components/workspace/welcome";
 import { useI18n } from "@/core/i18n/hooks";
 import {
   buildHumanInputResponseText,
+  hasOpenHumanInputRequest,
   type HumanInputRequest,
   type HumanInputResponse,
 } from "@/core/messages/human-input";
+import { isHiddenFromUIMessage } from "@/core/messages/utils";
 import { useModels } from "@/core/models/hooks";
 import { useNotification } from "@/core/notification/hooks";
 import { useLocalSettings, useThreadSettings } from "@/core/settings";
@@ -213,6 +215,14 @@ export default function ChatPage() {
     threadId,
     thread.values.goal,
   );
+  const hasOpenHumanInputCard = useMemo(
+    () =>
+      hasOpenHumanInputRequest(
+        thread.messages,
+        (message) => !isHiddenFromUIMessage(message),
+      ),
+    [thread.messages],
+  );
 
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
@@ -347,7 +357,9 @@ export default function ChatPage() {
                       disabled={
                         isMock ||
                         env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
-                        isUploading
+                        isUploading ||
+                        hasOpenHumanInputCard ||
+                        (!isNewThread && isHistoryLoading)
                       }
                       onContextChange={(context) =>
                         setSettings("context", context)

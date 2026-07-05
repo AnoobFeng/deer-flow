@@ -279,6 +279,16 @@ export function deriveHumanInputThreadState(
   return { answeredResponses, latestOpenRequestId };
 }
 
+export function hasOpenHumanInputRequest(
+  messages: Message[],
+  isVisibleMessage?: (message: Message) => boolean,
+) {
+  return (
+    deriveHumanInputThreadState(messages, isVisibleMessage)
+      .latestOpenRequestId !== null
+  );
+}
+
 export function createHumanInputOptionResponse(
   request: HumanInputRequest,
   option: HumanInputOption,
