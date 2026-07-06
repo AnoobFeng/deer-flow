@@ -18,11 +18,23 @@ import {
   type HumanInputRequest,
   type HumanInputResponse,
 } from "@/core/messages/human-input";
+import { isIMEComposing } from "@/lib/ime";
 import { cn } from "@/lib/utils";
 
 import { MarkdownContent } from "./markdown-content";
 
 export type HumanInputSubmitResult = boolean | void;
+
+export function shouldSubmitHumanInputTextOnKeyDown(
+  event: KeyboardEvent<HTMLTextAreaElement>,
+  isComposing = false,
+) {
+  return (
+    event.key === "Enter" &&
+    !event.shiftKey &&
+    !isIMEComposing(event, isComposing)
+  );
+}
 
 export function HumanInputCard({
   request,
@@ -42,6 +54,7 @@ export function HumanInputCard({
   const { t } = useI18n();
   const [text, setText] = useState("");
   const [error, setError] = useState("");
+  const [isComposing, setIsComposing] = useState(false);
   const titleId = useId();
   const textInputId = useId();
   const allowText =
@@ -85,7 +98,7 @@ export function HumanInputCard({
   };
 
   const handleTextKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (shouldSubmitHumanInputTextOnKeyDown(event, isComposing)) {
       event.preventDefault();
       const value = text.trim();
       if (!value) {
@@ -184,6 +197,8 @@ export function HumanInputCard({
                     setError("");
                   }
                 }}
+                onCompositionEnd={() => setIsComposing(false)}
+                onCompositionStart={() => setIsComposing(true)}
                 onKeyDown={handleTextKeyDown}
               />
               <div className="flex min-h-9 flex-wrap items-center justify-between gap-2">

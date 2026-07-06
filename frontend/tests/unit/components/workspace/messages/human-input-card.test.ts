@@ -1,8 +1,11 @@
 import { describe, expect, it } from "@rstest/core";
-import { createElement } from "react";
+import { createElement, type KeyboardEvent } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { HumanInputCard } from "@/components/workspace/messages/human-input-card";
+import {
+  HumanInputCard,
+  shouldSubmitHumanInputTextOnKeyDown,
+} from "@/components/workspace/messages/human-input-card";
 import { I18nContext } from "@/core/i18n/context";
 import type {
   HumanInputRequest,
@@ -78,6 +81,20 @@ describe("HumanInputCard", () => {
     expect(html).not.toContain("**题材/类型**");
     expect(html).not.toContain("**篇幅**");
   });
+
+  it("does not submit text with Enter while IME composition is active", () => {
+    expect(shouldSubmitHumanInputTextOnKeyDown(keyEvent())).toBe(true);
+    expect(
+      shouldSubmitHumanInputTextOnKeyDown(keyEvent({ shiftKey: true })),
+    ).toBe(false);
+    expect(
+      shouldSubmitHumanInputTextOnKeyDown(keyEvent({ isComposing: true })),
+    ).toBe(false);
+    expect(
+      shouldSubmitHumanInputTextOnKeyDown(keyEvent({ keyCode: 229 })),
+    ).toBe(false);
+    expect(shouldSubmitHumanInputTextOnKeyDown(keyEvent(), true)).toBe(false);
+  });
 });
 
 function renderCard(props: Partial<Parameters<typeof HumanInputCard>[0]> = {}) {
@@ -97,4 +114,23 @@ function renderCard(props: Partial<Parameters<typeof HumanInputCard>[0]> = {}) {
       }),
     ),
   );
+}
+
+function keyEvent({
+  isComposing = false,
+  key = "Enter",
+  keyCode = 13,
+  shiftKey = false,
+}: {
+  isComposing?: boolean;
+  key?: string;
+  keyCode?: number;
+  shiftKey?: boolean;
+} = {}) {
+  return {
+    key,
+    keyCode,
+    nativeEvent: { isComposing },
+    shiftKey,
+  } as unknown as KeyboardEvent<HTMLTextAreaElement>;
 }
