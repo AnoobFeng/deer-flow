@@ -46,8 +46,8 @@ def read_human_input_response(additional_kwargs: Mapping[str, object] | None) ->
 
     source = _non_empty_string(raw.get("source"))
     request_id = _non_empty_string(raw.get("request_id"))
-    value = raw.get("value")
-    if source is None or request_id is None or not isinstance(value, str):
+    value = _non_empty_string(raw.get("value"))
+    if source is None or request_id is None or value is None:
         return None
 
     response_kind = raw.get("response_kind")

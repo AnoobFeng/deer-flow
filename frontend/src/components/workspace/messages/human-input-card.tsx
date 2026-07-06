@@ -160,7 +160,7 @@ export function HumanInputCard({
           </div>
 
           {options.length > 0 ? (
-            <div className="grid gap-2" role="list">
+            <div className="grid gap-2">
               {options.map((option) => (
                 <Button
                   key={option.id}
