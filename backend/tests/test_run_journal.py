@@ -233,6 +233,118 @@ class TestToolCallbacks:
         assert isinstance(events, list)
 
 
+class TestFinalToolMessageReconciliation:
+    @pytest.mark.anyio
+    async def test_root_chain_end_reconciles_missing_ask_clarification_tool_message(self, journal_setup):
+        from langchain_core.messages import ToolMessage
+
+        j, store = journal_setup
+        j.on_llm_end(
+            _make_llm_response("", tool_calls=[{"id": "call_clarify", "name": "ask_clarification", "args": {"question": "Which format?"}}]),
+            run_id=uuid4(),
+            parent_run_id=None,
+            tags=["lead_agent"],
+        )
+        tool_msg = ToolMessage(
+            content="Which format?",
+            tool_call_id="call_clarify",
+            name="ask_clarification",
+            artifact={"human_input": {"kind": "human_input_request", "request_id": "clarification:call_clarify"}},
+        )
+
+        j.on_chain_end({"messages": [tool_msg]}, run_id=uuid4())
+        await j.flush()
+
+        messages = await store.list_messages("t1")
+        tool_results = [m for m in messages if m["event_type"] == "llm.tool.result"]
+        assert len(tool_results) == 1
+        assert tool_results[0]["content"]["name"] == "ask_clarification"
+        assert tool_results[0]["content"]["artifact"]["human_input"]["request_id"] == "clarification:call_clarify"
+
+    @pytest.mark.anyio
+    async def test_root_chain_end_does_not_duplicate_tool_message_captured_by_on_tool_end(self, journal_setup):
+        from langchain_core.messages import ToolMessage
+
+        j, store = journal_setup
+        j.on_llm_end(
+            _make_llm_response("", tool_calls=[{"id": "call_clarify", "name": "ask_clarification", "args": {"question": "Which format?"}}]),
+            run_id=uuid4(),
+            parent_run_id=None,
+            tags=["lead_agent"],
+        )
+        tool_msg = ToolMessage(content="Which format?", tool_call_id="call_clarify", name="ask_clarification")
+
+        j.on_tool_end(tool_msg, run_id=uuid4())
+        j.on_chain_end({"messages": [tool_msg]}, run_id=uuid4())
+        await j.flush()
+
+        messages = await store.list_messages("t1")
+        tool_results = [m for m in messages if m["event_type"] == "llm.tool.result"]
+        assert len(tool_results) == 1
+
+    @pytest.mark.anyio
+    async def test_root_chain_end_ignores_retained_old_tool_message_from_previous_run(self, journal_setup):
+        from langchain_core.messages import ToolMessage
+
+        j, store = journal_setup
+        j.on_llm_end(
+            _make_llm_response("", tool_calls=[{"id": "call_current", "name": "ask_clarification", "args": {"question": "Current?"}}]),
+            run_id=uuid4(),
+            parent_run_id=None,
+            tags=["lead_agent"],
+        )
+        retained_old_tool_msg = ToolMessage(content="Old question", tool_call_id="call_old", name="ask_clarification")
+
+        j.on_chain_end({"messages": [retained_old_tool_msg]}, run_id=uuid4())
+        await j.flush()
+
+        messages = await store.list_messages("t1")
+        assert not any(m["event_type"] == "llm.tool.result" for m in messages)
+
+    @pytest.mark.anyio
+    async def test_root_chain_end_ignores_non_allowlisted_tool_message(self, journal_setup):
+        from langchain_core.messages import ToolMessage
+
+        j, store = journal_setup
+        j.on_llm_end(
+            _make_llm_response("", tool_calls=[{"id": "call_search", "name": "web_search", "args": {"query": "deerflow"}}]),
+            run_id=uuid4(),
+            parent_run_id=None,
+            tags=["lead_agent"],
+        )
+        tool_msg = ToolMessage(content="Search result", tool_call_id="call_search", name="web_search")
+
+        j.on_chain_end({"messages": [tool_msg]}, run_id=uuid4())
+        await j.flush()
+
+        messages = await store.list_messages("t1")
+        assert not any(m["event_type"] == "llm.tool.result" for m in messages)
+
+    @pytest.mark.anyio
+    async def test_root_chain_end_ignores_hidden_ask_clarification_tool_message(self, journal_setup):
+        from langchain_core.messages import ToolMessage
+
+        j, store = journal_setup
+        j.on_llm_end(
+            _make_llm_response("", tool_calls=[{"id": "call_clarify", "name": "ask_clarification", "args": {"question": "Hidden?"}}]),
+            run_id=uuid4(),
+            parent_run_id=None,
+            tags=["lead_agent"],
+        )
+        tool_msg = ToolMessage(
+            content="Hidden?",
+            tool_call_id="call_clarify",
+            name="ask_clarification",
+            additional_kwargs={"hide_from_ui": True},
+        )
+
+        j.on_chain_end({"messages": [tool_msg]}, run_id=uuid4())
+        await j.flush()
+
+        messages = await store.list_messages("t1")
+        assert not any(m["event_type"] == "llm.tool.result" for m in messages)
+
+
 class TestCustomEvents:
     @pytest.mark.anyio
     async def test_on_custom_event_not_implemented(self, journal_setup):
