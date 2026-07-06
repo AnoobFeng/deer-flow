@@ -2,6 +2,7 @@ import type { Message } from "@langchain/langgraph-sdk";
 import type { BaseStream } from "@langchain/langgraph-sdk/react";
 import {
   ChevronUpIcon,
+  GitBranchPlusIcon,
   Loader2Icon,
   MessageCircleIcon,
   MessageSquarePlusIcon,
@@ -220,7 +221,9 @@ export function MessageList({
   isHistoryLoading,
   onRegenerateMessage,
   onSubmitHumanInput,
+  onBranchTurn,
   canRegenerate = false,
+  canBranch = false,
   enableSidecarActions = true,
   initialScroll = "smooth",
   resizeScroll = "smooth",
@@ -242,7 +245,12 @@ export function MessageList({
     request: HumanInputRequest,
     response: HumanInputResponse,
   ) => HumanInputSubmitResult | Promise<HumanInputSubmitResult>;
+  onBranchTurn?: (
+    messageId: string,
+    messageIds: string[],
+  ) => void | Promise<void>;
   canRegenerate?: boolean;
+  canBranch?: boolean;
   enableSidecarActions?: boolean;
   initialScroll?: ConversationProps["initial"];
   resizeScroll?: ConversationProps["resize"];
@@ -268,6 +276,9 @@ export function MessageList({
   const [pendingHumanInputRequestIds, setPendingHumanInputRequestIds] =
     useState<Set<string>>(() => new Set());
   const previousHumanInputThreadError = useRef<unknown>(thread.error);
+  const [branchingMessageId, setBranchingMessageId] = useState<string | null>(
+    null,
+  );
   const hasActiveAssistantText = useMemo(() => {
     let lastHumanIndex = -1;
     for (let i = groupedMessages.length - 1; i >= 0; i--) {
@@ -525,22 +536,52 @@ export function MessageList({
       enableRegenerateForTurn: boolean,
     ) => {
       const clipboardData = getAssistantTurnCopyData(messages, { isStreaming });
-      const regenerateTarget = [...messages]
+      const actionTarget = [...messages]
         .reverse()
         .find((message) => message.type === "ai" && message.id);
-      const supersededMessageIds = messages
+      const assistantMessageIds = messages
         .filter((message) => message.type === "ai" && message.id)
         .map((message) => message.id)
         .filter((id): id is string => typeof id === "string");
-      if (!clipboardData && !regenerateTarget) {
+      if (!clipboardData && !actionTarget) {
         return null;
       }
 
       return (
         <div className="mt-2 flex justify-start gap-1 opacity-0 transition-opacity delay-200 duration-300 group-hover/assistant-turn:opacity-100">
           {clipboardData && <CopyButton clipboardData={clipboardData} />}
+          {!isStreaming && actionTarget?.id && onBranchTurn && (
+            <Tooltip content={t.common.branch}>
+              <Button
+                aria-label={t.common.branch}
+                size="icon-sm"
+                type="button"
+                variant="ghost"
+                disabled={!canBranch || branchingMessageId === actionTarget.id}
+                onClick={() => {
+                  const targetId = actionTarget.id;
+                  if (!targetId) {
+                    return;
+                  }
+                  setBranchingMessageId(targetId);
+                  void Promise.resolve(
+                    onBranchTurn(targetId, assistantMessageIds),
+                  ).finally(() => {
+                    setBranchingMessageId(null);
+                  });
+                }}
+              >
+                <GitBranchPlusIcon
+                  className={cn(
+                    "size-4",
+                    branchingMessageId === actionTarget.id && "animate-pulse",
+                  )}
+                />
+              </Button>
+            </Tooltip>
+          )}
           {enableRegenerateForTurn &&
-            regenerateTarget?.id &&
+            actionTarget?.id &&
             onRegenerateMessage && (
               <Tooltip content={t.common.regenerate}>
                 <Button
@@ -549,17 +590,16 @@ export function MessageList({
                   type="button"
                   variant="ghost"
                   disabled={
-                    !canRegenerate ||
-                    regeneratingMessageId === regenerateTarget.id
+                    !canRegenerate || regeneratingMessageId === actionTarget.id
                   }
                   onClick={() => {
-                    const targetId = regenerateTarget.id;
+                    const targetId = actionTarget.id;
                     if (!targetId) {
                       return;
                     }
                     setRegeneratingMessageId(targetId);
                     void Promise.resolve(
-                      onRegenerateMessage?.(targetId, supersededMessageIds),
+                      onRegenerateMessage?.(targetId, assistantMessageIds),
                     ).finally(() => {
                       setRegeneratingMessageId(null);
                     });
@@ -568,7 +608,7 @@ export function MessageList({
                   <RefreshCcwIcon
                     className={cn(
                       "size-3",
-                      regeneratingMessageId === regenerateTarget.id &&
+                      regeneratingMessageId === actionTarget.id &&
                         "animate-spin",
                     )}
                   />
@@ -579,9 +619,13 @@ export function MessageList({
       );
     },
     [
+      branchingMessageId,
+      canBranch,
       canRegenerate,
+      onBranchTurn,
       onRegenerateMessage,
       regeneratingMessageId,
+      t.common.branch,
       t.common.regenerate,
     ],
   );
