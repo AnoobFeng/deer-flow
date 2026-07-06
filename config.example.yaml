@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 18
+config_version: 19
 
 # ============================================================================
 # Logging
@@ -935,6 +935,31 @@ loop_detection:
   #     hard_limit: 300
 
 # ============================================================================
+# Tool Progress State Machine Configuration (RFC #3177)
+# ============================================================================
+# Detects tool stagnation and repetition at the (thread, tool) level.
+# Tracks consecutive "no-new-info" calls (error, partial_success, near-duplicate success).
+# Three transition paths (determined by deerflow_tool_meta.recoverable_by_model):
+#   recoverable=true  (no_results, not_found, permission): ACTIVE → WARNED (terminal; hint re-injected each call)
+#   recoverable=false (rate_limited, transient):           ACTIVE → WARNED → BLOCKED after warn_escalation_count more
+#   recoverable=false + action=stop (auth, config):        ACTIVE → BLOCKED immediately
+# Requires ToolErrorHandlingMiddleware to be active (always on).
+
+# tool_progress:
+#   enabled: false
+#   stagnation_threshold: 3        # Consecutive problems before WARNED
+#   warn_escalation_count: 2       # More problems after WARNED before BLOCKED
+#   inject_assessment: true
+#   jaccard_similarity_threshold: 0.8  # Word-set similarity threshold for near-duplicate detection
+#   min_word_count_for_similarity: 10  # Min unique words to apply Jaccard check
+#   max_tracked_threads: 100
+#   exempt_tools:
+#     - ask_clarification
+#     - write_todos
+#     - present_files
+#     - task
+
+# ============================================================================
 # Read-Before-Write File Gate (issue #3857)
 # ============================================================================
 # Blocks write_file (append / overwrite of an existing file) and str_replace
@@ -1342,6 +1367,26 @@ memory:
   guaranteed_categories:
     - correction
   guaranteed_token_budget: 500
+  # Staleness review: periodically prune aged facts that may no longer reflect
+  # the user's current situation.  When triggered, the LLM reviews facts older
+  # than ``staleness_age_days`` during the normal memory-update call (same LLM
+  # invocation — no extra API call) and decides KEEP or REMOVE for each.
+  #   staleness_review_enabled - master switch (default: true)
+  #   staleness_age_days       - facts older than this are candidates (default: 90)
+  #   staleness_min_candidates - minimum stale facts required to trigger a review
+  #                              cycle; avoids wasteful LLM calls when there are
+  #                              very few candidates (default: 3)
+  #   staleness_max_removals_per_cycle - safety cap on removals per cycle; when
+  #                                      exceeded, the lowest-confidence entries
+  #                                      are kept (default: 10)
+  #   staleness_protected_categories - fact categories exempt from review
+  #                                    (default: ["correction"])
+  staleness_review_enabled: true
+  staleness_age_days: 90
+  staleness_min_candidates: 3
+  staleness_max_removals_per_cycle: 10
+  staleness_protected_categories:
+    - correction
 
 # ============================================================================
 # Custom Agent Management API
