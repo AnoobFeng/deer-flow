@@ -934,6 +934,18 @@ class TestProgressSnapshots:
 class TestChatModelStartHumanMessage:
     """Tests for on_chat_model_start extracting the first human message."""
 
+    @staticmethod
+    def _human_input_response(source: str = "ask_clarification") -> dict:
+        return {
+            "version": 1,
+            "kind": "human_input_response",
+            "source": source,
+            "request_id": "clarification:call-abc",
+            "response_kind": "option",
+            "option_id": "option-2",
+            "value": "staging",
+        }
+
     @pytest.mark.anyio
     async def test_extracts_first_human_message(self, journal_setup):
         """on_chat_model_start captures the first HumanMessage from prompts."""
@@ -989,6 +1001,74 @@ class TestChatModelStartHumanMessage:
             additional_kwargs={"hide_from_ui": True},
         )
         j.on_chat_model_start({}, [[hidden_message]], run_id=uuid4(), tags=["lead_agent"])
+        await j.flush()
+
+        assert j._first_human_msg is None
+        assert j.get_completion_data()["message_count"] == 0
+        events = await store.list_events("t1", "r1")
+        assert not any(e["event_type"] == "llm.human.input" for e in events)
+
+    @pytest.mark.anyio
+    async def test_hidden_human_input_response_is_captured(self, journal_setup):
+        """Hidden HumanInputCard replies are user-authored and must survive compaction."""
+        from langchain_core.messages import HumanMessage
+
+        j, store = journal_setup
+        hidden_response = HumanMessage(
+            content='For your clarification "Which environment?", my answer is: staging',
+            additional_kwargs={
+                "hide_from_ui": True,
+                "human_input_response": self._human_input_response(),
+            },
+        )
+        j.on_chat_model_start({}, [[hidden_response]], run_id=uuid4(), tags=["lead_agent"])
+        await j.flush()
+
+        assert j._first_human_msg == 'For your clarification "Which environment?", my answer is: staging'
+        assert j.get_completion_data()["message_count"] == 1
+        events = await store.list_events("t1", "r1")
+        human_events = [e for e in events if e["event_type"] == "llm.human.input"]
+        assert len(human_events) == 1
+        assert human_events[0]["content"]["additional_kwargs"]["hide_from_ui"] is True
+        assert human_events[0]["content"]["additional_kwargs"]["human_input_response"]["request_id"] == "clarification:call-abc"
+
+    @pytest.mark.anyio
+    async def test_hidden_human_input_response_wins_over_older_visible_prompt(self, journal_setup):
+        """The latest hidden card reply is the run input, not an older visible prompt."""
+        from langchain_core.messages import HumanMessage
+
+        j, store = journal_setup
+        older_prompt = HumanMessage(content="Write a quicksort PDF")
+        hidden_response = HumanMessage(
+            content='For your clarification "Which format?", my answer is: tutorial',
+            additional_kwargs={
+                "hide_from_ui": True,
+                "human_input_response": self._human_input_response(),
+            },
+        )
+        j.on_chat_model_start({}, [[older_prompt, hidden_response]], run_id=uuid4(), tags=["lead_agent"])
+        await j.flush()
+
+        assert j._first_human_msg == 'For your clarification "Which format?", my answer is: tutorial'
+        events = await store.list_events("t1", "r1")
+        human_events = [e for e in events if e["event_type"] == "llm.human.input"]
+        assert len(human_events) == 1
+        assert human_events[0]["content"]["content"] == 'For your clarification "Which format?", my answer is: tutorial'
+
+    @pytest.mark.anyio
+    async def test_hidden_human_input_response_ignores_non_allowlisted_source(self, journal_setup):
+        """Only explicit HumanInputCard sources are persisted while hidden."""
+        from langchain_core.messages import HumanMessage
+
+        j, store = journal_setup
+        hidden_response = HumanMessage(
+            content="Internal approval response",
+            additional_kwargs={
+                "hide_from_ui": True,
+                "human_input_response": self._human_input_response(source="future_approval"),
+            },
+        )
+        j.on_chat_model_start({}, [[hidden_response]], run_id=uuid4(), tags=["lead_agent"])
         await j.flush()
 
         assert j._first_human_msg is None

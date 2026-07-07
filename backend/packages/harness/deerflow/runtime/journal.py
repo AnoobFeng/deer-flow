@@ -29,6 +29,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
+from deerflow.agents.human_input import read_human_input_response
 from deerflow.utils.messages import message_to_text
 
 if TYPE_CHECKING:
@@ -38,10 +39,18 @@ logger = logging.getLogger(__name__)
 
 _LEGACY_SUMMARY_MESSAGE_NAME = "summary"
 _RECONCILED_TOOL_MESSAGE_NAMES = frozenset({"ask_clarification"})
+_PERSISTED_HIDDEN_HUMAN_INPUT_RESPONSE_SOURCES = frozenset({"ask_clarification"})
 
 
-def _is_user_visible_human_message(message: BaseMessage) -> bool:
-    return isinstance(message, HumanMessage) and message.name != _LEGACY_SUMMARY_MESSAGE_NAME and message.additional_kwargs.get("hide_from_ui") is not True
+def _should_persist_human_input_message(message: BaseMessage) -> bool:
+    if not isinstance(message, HumanMessage):
+        return False
+    if message.name == _LEGACY_SUMMARY_MESSAGE_NAME:
+        return False
+    if message.additional_kwargs.get("hide_from_ui") is not True:
+        return True
+    response = read_human_input_response(message.additional_kwargs)
+    return response is not None and response["source"] in _PERSISTED_HIDDEN_HUMAN_INPUT_RESPONSE_SOURCES
 
 
 class RunJournal(BaseCallbackHandler):
@@ -212,7 +221,7 @@ class RunJournal(BaseCallbackHandler):
         if caller == "lead_agent" and not self._first_human_msg and messages:
             for batch in reversed(messages):
                 for m in reversed(batch):
-                    if _is_user_visible_human_message(m):
+                    if _should_persist_human_input_message(m):
                         self.set_first_human_message(m.text)
                         self._put(
                             event_type="llm.human.input",
