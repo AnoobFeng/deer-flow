@@ -56,7 +56,7 @@ async def test_jsonl_run_event_store_async_api_does_not_block_event_loop(tmp_pat
     assert isinstance(await store.list_events("t1", "r1"), list)
     assert isinstance(await store.list_events("t1", "r1", event_types=["message"]), list)
     assert isinstance(await store.list_messages_by_run("t1", "r2"), list)
-    assert isinstance(await store.get_last_visible_ai_seq_by_run("t1", {"r1", "r2"}), dict)
+    assert isinstance(await store.get_last_visible_ai_seq_by_run("t1", {"r1", "r2"}, user_id="user-1"), dict)
     assert await store.count_messages("t1") >= 1
 
     # deletes: delete_by_run (single file) then delete_by_thread (remaining)

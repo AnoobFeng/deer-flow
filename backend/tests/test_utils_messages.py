@@ -107,14 +107,24 @@ def test_restore_original_human_message_preserves_mixed_non_text_blocks_in_order
             {"type": "text", "text": "--- BEGIN USER INPUT ---\ncompare\n--- END USER INPUT ---"},
             file_block,
         ],
-        additional_kwargs={ORIGINAL_USER_CONTENT_KEY: "compare"},
+        additional_kwargs={ORIGINAL_USER_CONTENT_KEY: "compare", "metadata": {"source": "user"}},
     )
 
     restored = restore_original_human_message(wrapped)
 
     assert restored.content == [image, {"type": "text", "text": "compare"}, file_block]
-    assert ORIGINAL_USER_CONTENT_KEY not in restored.additional_kwargs
+    assert restored.additional_kwargs == {"metadata": {"source": "user"}}
     assert wrapped.content[1]["text"].startswith("--- BEGIN USER INPUT ---")
+
+    assert restored.content[0] is not wrapped.content[0]
+    assert restored.content[0]["image_url"] is not wrapped.content[0]["image_url"]
+    assert restored.additional_kwargs["metadata"] is not wrapped.additional_kwargs["metadata"]
+
+    restored.content[0]["image_url"]["url"] = "data:image/png;base64,changed"
+    restored.additional_kwargs["metadata"]["source"] = "history"
+
+    assert wrapped.content[0]["image_url"]["url"] == "data:image/png;base64,abc"
+    assert wrapped.additional_kwargs["metadata"]["source"] == "user"
 
 
 def test_restore_original_human_message_without_original_metadata_is_unchanged():

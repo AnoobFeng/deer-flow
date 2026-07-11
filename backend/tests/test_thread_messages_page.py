@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+import logging
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from _router_auth_helpers import make_authed_test_app
 from fastapi.testclient import TestClient
 
@@ -126,6 +128,37 @@ def test_thread_page_filters_all_successfully_superseded_runs_before_filling():
     assert body["next_before_seq"] is None
 
 
+def test_thread_page_logs_rows_missing_sequence_values(caplog):
+    store = AsyncMock()
+    store.list_messages.return_value = [{"run_id": "run-1", "content": {"type": "human"}}]
+    app = _make_app(store)
+
+    with caplog.at_level(logging.ERROR, logger="app.gateway.routers.thread_runs"):
+        with TestClient(app) as client, pytest.raises(RuntimeError, match="missing sequence values"):
+            client.get("/api/threads/thread-1/messages/page")
+
+    assert "Thread message scan found rows without sequence values" in caplog.text
+    assert "thread_id=thread-1" in caplog.text
+    assert "scan_before=None" in caplog.text
+    assert "row_count=1" in caplog.text
+
+
+def test_thread_page_logs_when_scan_cursor_does_not_advance(caplog):
+    store = AsyncMock()
+    store.list_messages.return_value = [{"run_id": "run-1", "seq": 10, "content": {"type": "human"}}]
+    app = _make_app(store)
+
+    with caplog.at_level(logging.ERROR, logger="app.gateway.routers.thread_runs"):
+        with TestClient(app) as client, pytest.raises(RuntimeError, match="did not advance"):
+            client.get("/api/threads/thread-1/messages/page?before_seq=10")
+
+    assert "Thread message scan cursor did not advance" in caplog.text
+    assert "thread_id=thread-1" in caplog.text
+    assert "scan_before=10" in caplog.text
+    assert "next_scan_before=10" in caplog.text
+    assert "row_count=1" in caplog.text
+
+
 def test_thread_page_feedback_only_attaches_to_global_last_ai_row():
     store = MemoryRunEventStore()
 
@@ -135,6 +168,10 @@ def test_thread_page_feedback_only_attaches_to_global_last_ai_row():
         await _put_message(store, "run-1", "ai", "final")
 
     asyncio.run(seed())
+    original_list_messages = store.list_messages
+    original_get_last_visible_ai_seq_by_run = store.get_last_visible_ai_seq_by_run
+    store.list_messages = AsyncMock(wraps=original_list_messages)
+    store.get_last_visible_ai_seq_by_run = AsyncMock(wraps=original_get_last_visible_ai_seq_by_run)
     feedback = {"run-1": {"feedback_id": "fb-1", "rating": 1, "comment": "good"}}
     app = _make_app(store, feedback=feedback)
     with TestClient(app) as client:
@@ -144,6 +181,42 @@ def test_thread_page_feedback_only_attaches_to_global_last_ai_row():
     assert data[0]["feedback"] is None
     assert data[1]["feedback"] is None
     assert data[2]["feedback"] == {"feedback_id": "fb-1", "rating": 1, "comment": "good"}
+    scan_user_id = store.list_messages.await_args.kwargs["user_id"]
+    enrichment_user_id = store.get_last_visible_ai_seq_by_run.await_args.kwargs["user_id"]
+    assert enrichment_user_id == scan_user_id
+
+
+def test_thread_page_helpers_forward_explicit_user_without_request_context():
+    event_store = AsyncMock()
+    event_store.list_messages.return_value = []
+    event_store.get_last_visible_ai_seq_by_run.return_value = {}
+    run_manager = AsyncMock()
+    run_manager.list_successful_regenerate_sources.return_value = set()
+    run_manager.get_many_by_thread.return_value = {}
+    request = MagicMock()
+    request.app.state.run_event_store = event_store
+    request.app.state.run_manager = run_manager
+    request.app.state.feedback_repo = AsyncMock()
+
+    async def exercise_helpers():
+        await thread_runs._scan_thread_message_page(
+            "thread-1",
+            limit=10,
+            before_seq=None,
+            request=request,
+            user_id="background-user",
+        )
+        await thread_runs._enrich_thread_message_page(
+            "thread-1",
+            [{"run_id": "run-1", "seq": 1, "content": {"type": "human"}}],
+            request=request,
+            user_id="background-user",
+        )
+
+    asyncio.run(exercise_helpers())
+
+    assert event_store.list_messages.await_args.kwargs["user_id"] == "background-user"
+    assert event_store.get_last_visible_ai_seq_by_run.await_args.kwargs["user_id"] == "background-user"
 
 
 def test_thread_page_batch_hydrates_duration_for_old_runs():

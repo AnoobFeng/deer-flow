@@ -42,6 +42,14 @@ async def _seed_ai_messages(store):
         content={"type": "ai", "content": "other"},
         metadata={"caller": "lead_agent"},
     )
+    await store.put(
+        thread_id="t1",
+        run_id="r_mw",
+        event_type="llm.ai.response",
+        category="message",
+        content={"type": "ai", "content": "middleware only"},
+        metadata={"caller": "middleware:title"},
+    )
     return {"r1": last["seq"], "r2": other["seq"]}
 
 
@@ -49,7 +57,9 @@ async def _seed_ai_messages(store):
 async def test_memory_event_store_returns_global_last_non_middleware_ai_seq():
     store = MemoryRunEventStore()
     expected = await _seed_ai_messages(store)
-    assert await store.get_last_visible_ai_seq_by_run("t1", {"r1", "r2", "missing"}) == expected
+    result = await store.get_last_visible_ai_seq_by_run("t1", {"r1", "r2", "r_mw", "missing"})
+    assert result == expected
+    assert "r_mw" not in result
 
 
 @pytest.mark.anyio
@@ -58,7 +68,9 @@ async def test_jsonl_event_store_returns_global_last_non_middleware_ai_seq(tmp_p
 
     store = JsonlRunEventStore(base_dir=tmp_path)
     expected = await _seed_ai_messages(store)
-    assert await store.get_last_visible_ai_seq_by_run("t1", {"r1", "r2", "missing"}) == expected
+    result = await store.get_last_visible_ai_seq_by_run("t1", {"r1", "r2", "r_mw", "missing"})
+    assert result == expected
+    assert "r_mw" not in result
 
 
 @pytest.mark.anyio
@@ -70,7 +82,9 @@ async def test_db_event_store_returns_global_last_non_middleware_ai_seq(tmp_path
     try:
         store = DbRunEventStore(get_session_factory())
         expected = await _seed_ai_messages(store)
-        assert await store.get_last_visible_ai_seq_by_run("t1", {"r1", "r2", "missing"}) == expected
+        result = await store.get_last_visible_ai_seq_by_run("t1", {"r1", "r2", "r_mw", "missing"})
+        assert result == expected
+        assert "r_mw" not in result
     finally:
         await close_engine()
 

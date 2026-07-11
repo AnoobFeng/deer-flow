@@ -1,5 +1,5 @@
 import type { Message } from "@langchain/langgraph-sdk";
-import { expect, test } from "@rstest/core";
+import { expect, rs, test } from "@rstest/core";
 import { InfiniteQueryObserver, QueryClient } from "@tanstack/react-query";
 
 import {
@@ -8,6 +8,7 @@ import {
   computeSummarizationTransientMessages,
   flattenThreadHistoryPages,
   getSummarizationMiddlewareMessages,
+  getThreadHistoryNextPageParam,
   getVisibleOptimisticMessages,
   mergeTransientHistoryBridge,
   mergeTransientHistoryBridgeOrder,
@@ -140,6 +141,42 @@ test("mergeMessages keeps source order when history and live tail do not overlap
   expect(mergeMessages([historyAi], [liveHuman], [])).toEqual([
     historyAi,
     liveHuman,
+  ]);
+});
+
+test("mergeMessages appends a trailing live-only segment after newer canonical rows", () => {
+  const message = (id: string) =>
+    ({ id, type: "human", content: id }) as Message;
+  const [a, b, c, d, y] = ["a", "b", "c", "d", "y"].map(message) as [
+    Message,
+    Message,
+    Message,
+    Message,
+    Message,
+  ];
+
+  expect(mergeMessages([a, b, c, d], [b, y], [])).toEqual([a, b, c, d, y]);
+});
+
+test("mergeMessages keeps live-only messages between shared anchors in place", () => {
+  const message = (id: string) =>
+    ({ id, type: "human", content: id }) as Message;
+  const [a, b, c, d, x, y] = ["a", "b", "c", "d", "x", "y"].map(message) as [
+    Message,
+    Message,
+    Message,
+    Message,
+    Message,
+    Message,
+  ];
+
+  expect(mergeMessages([a, b, c, d], [b, x, d, y], [])).toEqual([
+    a,
+    b,
+    c,
+    x,
+    d,
+    y,
   ]);
 });
 
@@ -437,8 +474,7 @@ test("infinite history refetch recalculates older-page cursors from the refreshe
           eligible.length > pageSeqs.length ? (pageSeqs[0] ?? null) : null,
       };
     },
-    getNextPageParam: (lastPage) =>
-      lastPage.has_more ? (lastPage.next_before_seq ?? undefined) : undefined,
+    getNextPageParam: getThreadHistoryNextPageParam,
   });
   const unsubscribe = observer.subscribe(() => undefined);
 
@@ -463,6 +499,39 @@ test("infinite history refetch recalculates older-page cursors from the refreshe
 
   unsubscribe();
   queryClient.clear();
+});
+
+test("infinite history stops and warns when has_more has no cursor", async () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const requestedCursors: Array<number | null> = [];
+  const warnSpy = rs.spyOn(console, "warn").mockImplementation(() => ({}));
+  const observer = new InfiniteQueryObserver(queryClient, {
+    queryKey: ["thread-messages", "invalid-cursor"],
+    initialPageParam: null as number | null,
+    queryFn: ({ pageParam }): ThreadMessagesPageResponse => {
+      requestedCursors.push(pageParam);
+      return { data: [], has_more: true, next_before_seq: null };
+    },
+    getNextPageParam: getThreadHistoryNextPageParam,
+  });
+  const unsubscribe = observer.subscribe(() => undefined);
+
+  try {
+    await observer.refetch();
+    await observer.fetchNextPage();
+
+    expect(requestedCursors).toEqual([null]);
+    expect(observer.getCurrentResult().hasNextPage).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Thread history returned has_more without next_before_seq; pagination cannot continue.",
+    );
+  } finally {
+    unsubscribe();
+    warnSpy.mockRestore();
+    queryClient.clear();
+  }
 });
 
 test("removeSetItems removes pending superseded ids after submit failure", () => {

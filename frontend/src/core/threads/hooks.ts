@@ -263,6 +263,21 @@ export type ThreadMessagesPageResponse = {
   next_before_seq: number | null;
 };
 
+export function getThreadHistoryNextPageParam(
+  lastPage: ThreadMessagesPageResponse,
+): number | undefined {
+  if (!lastPage.has_more) {
+    return undefined;
+  }
+  if (lastPage.next_before_seq === null) {
+    console.warn(
+      "Thread history returned has_more without next_before_seq; pagination cannot continue.",
+    );
+    return undefined;
+  }
+  return lastPage.next_before_seq;
+}
+
 export const threadHistoryQueryKey = (threadId: string) =>
   ["thread-messages", threadId] as const;
 
@@ -376,10 +391,12 @@ export function mergeMessages(
         ? replacementByIdentity.get(identity)
         : undefined;
       canonicalAndLive.push(replacement ?? message);
-      if (identity === lastAnchorIdentity) {
-        canonicalAndLive.push(...pending);
-      }
     }
+    // A trailing live-only segment is known to come after the last shared
+    // anchor, but that anchor may not be the end of canonical history (for
+    // example, another client may have persisted newer rows). Preserve the
+    // canonical source order before appending the live tail.
+    canonicalAndLive.push(...pending);
   }
 
   const merged = dedupeMessagesByIdentity([
@@ -1767,8 +1784,7 @@ export function useThreadHistory(
       }
       return (await response.json()) as ThreadMessagesPageResponse;
     },
-    getNextPageParam: (lastPage) =>
-      lastPage.has_more ? (lastPage.next_before_seq ?? undefined) : undefined,
+    getNextPageParam: getThreadHistoryNextPageParam,
   });
 
   const messageRows = useMemo(

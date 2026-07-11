@@ -30,6 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from deerflow.runtime.events.store.base import RunEventStore
+from deerflow.runtime.user_context import AUTO, _AutoSentinel
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +163,7 @@ class JsonlRunEventStore(RunEventStore):
             results.append(record)
         return results
 
-    async def list_messages(self, thread_id, *, limit=50, before_seq=None, after_seq=None):
+    async def list_messages(self, thread_id, *, limit=50, before_seq=None, after_seq=None, user_id: str | None | _AutoSentinel = AUTO):
         all_events = await asyncio.to_thread(self._read_thread_events, thread_id)
         messages = [e for e in all_events if e.get("category") == "message"]
 
@@ -197,7 +198,7 @@ class JsonlRunEventStore(RunEventStore):
         else:
             return filtered[-limit:] if len(filtered) > limit else filtered
 
-    async def get_last_visible_ai_seq_by_run(self, thread_id, run_ids):
+    async def get_last_visible_ai_seq_by_run(self, thread_id, run_ids, *, user_id: str | None | _AutoSentinel = AUTO):
         def _scan() -> dict[str, int]:
             result: dict[str, int] = {}
             for run_id in run_ids:

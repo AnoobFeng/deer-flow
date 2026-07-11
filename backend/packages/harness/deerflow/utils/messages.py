@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
 from langchain_core.messages import HumanMessage
@@ -123,8 +124,12 @@ def restore_original_human_message(message: HumanMessage) -> HumanMessage:
 
     return message.model_copy(
         update={
-            "content": restored_content,
-            "additional_kwargs": additional_kwargs,
+            # Pydantic deep-copies the original model for ``deep=True``, but
+            # applies values supplied through ``update`` without copying them.
+            # Keep the persisted/UI copy fully isolated from the model-facing
+            # message, including nested image/file blocks and metadata.
+            "content": deepcopy(restored_content),
+            "additional_kwargs": deepcopy(additional_kwargs),
         },
         deep=True,
     )
