@@ -4,14 +4,16 @@ import { expect, test } from "@rstest/core";
 import {
   buildThreadMessagesPageUrl,
   buildVisibleHistoryMessages,
-  computeSummarizationMovedMessages,
+  computeSummarizationTransientMessages,
   flattenThreadHistoryPages,
   getSummarizationMiddlewareMessages,
   getVisibleOptimisticMessages,
+  mergeTransientHistoryBridge,
   mergeMessages,
-  pruneConfirmedArchivedMessages,
+  pruneConfirmedTransientMessages,
   removeSetItems,
-  resolvePreservedHistory,
+  resolveThreadTransientHistoryBridge,
+  resolveTransientHistoryBridge,
 } from "@/core/threads/hooks";
 import type { RunMessage } from "@/core/threads/types";
 
@@ -412,7 +414,7 @@ test("buildVisibleHistoryMessages filters superseded runs but keeps regenerated 
 
   // run_id is carried onto each content message (#3779) so historical subtask
   // cards can fetch their persisted step history on expand.
-  expect(buildVisibleHistoryMessages(rows, new Set(["run-old"]), [])).toEqual([
+  expect(buildVisibleHistoryMessages(rows, new Set(["run-old"]))).toEqual([
     { ...newHuman, run_id: "run-new" },
     { ...newAi, run_id: "run-new" },
   ]);
@@ -428,19 +430,15 @@ test("buildVisibleHistoryMessages attaches run_id to each content message (#3779
     },
   ];
 
-  const result = buildVisibleHistoryMessages(rows, new Set(), []);
+  const result = buildVisibleHistoryMessages(rows, new Set());
 
   expect((result[0] as { run_id?: string }).run_id).toBe("run-1");
 });
 
 // Regression coverage for #3825: after context summarization the backend emits
 // RemoveMessage(ALL) + summary + retained, and onUpdateEvent rescues the removed
-// messages into history via an async setState. The live thread.messages (an
-// external store) and the archived history (React state) update through two
-// independent scheduling channels, so a render can observe the post-summary
-// (shrunk) thread while the rescued messages have NOT yet landed in
-// visibleHistory. resolvePreservedHistory overlays a synchronous archive buffer
-// so the merge never loses those messages regardless of the interleaving.
+// messages into a current-stream transient bridge. The bridge fills only the
+// journal flush/refetch gap and never mutates canonical history pages.
 
 const summarizationHuman1 = {
   id: "human-1",
@@ -468,17 +466,15 @@ const summarizationMovedMessages = [
   summarizationHuman2,
 ];
 
-test("resolvePreservedHistory keeps rescued messages while history state is still stale (regression for #3825)", () => {
-  // visibleHistory has not yet absorbed the rescued messages (async setState
-  // from appendMessages is still pending in this render).
+test("resolveTransientHistoryBridge keeps rescued messages while history state is stale", () => {
   const staleHistory: Message[] = [];
 
   expect(
-    resolvePreservedHistory(staleHistory, summarizationMovedMessages),
+    resolveTransientHistoryBridge(staleHistory, summarizationMovedMessages),
   ).toEqual(summarizationMovedMessages);
 });
 
-test("resolvePreservedHistory appends rescued messages after already-loaded history", () => {
+test("resolveTransientHistoryBridge appends rescued messages after canonical history", () => {
   const olderLoadedHuman = {
     id: "older-human",
     type: "human",
@@ -486,24 +482,79 @@ test("resolvePreservedHistory appends rescued messages after already-loaded hist
   } as Message;
 
   expect(
-    resolvePreservedHistory([olderLoadedHuman], summarizationMovedMessages),
+    resolveTransientHistoryBridge(
+      [olderLoadedHuman],
+      summarizationMovedMessages,
+    ),
   ).toEqual([olderLoadedHuman, ...summarizationMovedMessages]);
 });
 
-test("resolvePreservedHistory does not duplicate or reorder once history state catches up", () => {
-  // visibleHistory now contains the rescued messages (appendMessages committed),
-  // but the synchronous buffer still holds them this render.
+test("resolveTransientHistoryBridge does not duplicate once canonical history catches up", () => {
   expect(
-    resolvePreservedHistory(
+    resolveTransientHistoryBridge(
       summarizationMovedMessages,
       summarizationMovedMessages,
     ),
   ).toEqual(summarizationMovedMessages);
 });
 
-test("resolvePreservedHistory returns history unchanged when nothing is pending archival", () => {
+test("resolveTransientHistoryBridge returns history unchanged when the bridge is empty", () => {
   const history = [summarizationHuman1, summarizationAi1];
-  expect(resolvePreservedHistory(history, [])).toBe(history);
+  expect(resolveTransientHistoryBridge(history, [])).toBe(history);
+});
+
+test("resolveThreadTransientHistoryBridge never leaks a bridge across threads", () => {
+  const canonical = [
+    { id: "older-human", type: "human", content: "older" } as Message,
+  ];
+  expect(
+    resolveThreadTransientHistoryBridge(
+      canonical,
+      summarizationMovedMessages,
+      "thread-a",
+      "thread-b",
+    ),
+  ).toBe(canonical);
+  expect(
+    resolveThreadTransientHistoryBridge(
+      canonical,
+      summarizationMovedMessages,
+      null,
+      null,
+    ),
+  ).toBe(canonical);
+  expect(
+    resolveThreadTransientHistoryBridge(
+      canonical,
+      summarizationMovedMessages,
+      "thread-a",
+      "thread-a",
+    ),
+  ).toEqual([canonical[0], ...summarizationMovedMessages]);
+});
+
+test("mergeTransientHistoryBridge preserves chronology across repeated compression", () => {
+  const human3 = {
+    id: "human-3",
+    type: "human",
+    content: "round 3 question",
+  } as Message;
+  const firstBridge = mergeTransientHistoryBridge(
+    [],
+    [summarizationHuman1, summarizationAi1],
+  );
+  const secondBridge = mergeTransientHistoryBridge(firstBridge, [
+    summarizationAi1,
+    summarizationHuman2,
+    human3,
+  ]);
+
+  expect(secondBridge.map((message) => message.id)).toEqual([
+    "human-1",
+    "ai-1",
+    "human-2",
+    "human-3",
+  ]);
 });
 
 test("merge keeps the full conversation across summarization even when visibleHistory lags (regression for #3825)", () => {
@@ -519,7 +570,7 @@ test("merge keeps the full conversation across summarization even when visibleHi
 
   // The bad render: visibleHistory is still empty, so without the buffer the
   // rescued round-1/2 messages exist in neither merge input and are lost.
-  const effectiveHistory = resolvePreservedHistory(
+  const effectiveHistory = resolveTransientHistoryBridge(
     [],
     summarizationMovedMessages,
   );
@@ -534,23 +585,23 @@ test("merge keeps the full conversation across summarization even when visibleHi
   ]);
 });
 
-test("pruneConfirmedArchivedMessages drops messages history has absorbed but keeps the rest", () => {
+test("pruneConfirmedTransientMessages drops canonical identities but keeps the rest", () => {
   // History has caught up on the first two rescued messages only.
   expect(
-    pruneConfirmedArchivedMessages(summarizationMovedMessages, [
+    pruneConfirmedTransientMessages(summarizationMovedMessages, [
       summarizationHuman1,
       summarizationAi1,
     ]),
   ).toEqual([summarizationHuman2]);
 });
 
-test("pruneConfirmedArchivedMessages keeps every pending message while history has not caught up", () => {
+test("pruneConfirmedTransientMessages keeps entries while canonical history is stale", () => {
   expect(
-    pruneConfirmedArchivedMessages(summarizationMovedMessages, []),
+    pruneConfirmedTransientMessages(summarizationMovedMessages, []),
   ).toEqual(summarizationMovedMessages);
 });
 
-test("resolvePreservedHistory prefers the live history copy over a stale buffered duplicate (#3825 review #3)", () => {
+test("resolveTransientHistoryBridge prefers canonical copy over stale transient copy", () => {
   // Same identity, but the buffered copy is an older snapshot. The live history
   // copy (e.g. the finalized answer) must win — the buffer only fills gaps, it
   // must never overwrite a message history already shows.
@@ -565,12 +616,12 @@ test("resolvePreservedHistory prefers the live history copy over a stale buffere
     content: "finalized answer",
   } as Message;
 
-  expect(resolvePreservedHistory([liveFinal], [staleBuffered])).toEqual([
+  expect(resolveTransientHistoryBridge([liveFinal], [staleBuffered])).toEqual([
     liveFinal,
   ]);
 });
 
-test("computeSummarizationMovedMessages returns the live turns dropped before the retained boundary (regression for #3825)", () => {
+test("computeSummarizationTransientMessages captures live turns dropped before the retained boundary", () => {
   const removeAll = {
     id: "__remove_all__",
     type: "remove",
@@ -592,7 +643,7 @@ test("computeSummarizationMovedMessages returns the live turns dropped before th
   const summarizationMessages = [removeAll, hiddenSummary, summarizationAi2];
 
   expect(
-    computeSummarizationMovedMessages(
+    computeSummarizationTransientMessages(
       liveThreadBeforeSummary,
       summarizationMessages,
       new Set([hiddenSummary.id!]),
@@ -600,7 +651,7 @@ test("computeSummarizationMovedMessages returns the live turns dropped before th
   ).toEqual([summarizationHuman1, summarizationAi1, summarizationHuman2]);
 });
 
-test("computeSummarizationMovedMessages excludes already-summarized control messages", () => {
+test("computeSummarizationTransientMessages excludes already-summarized control messages", () => {
   const priorSummary = {
     id: "summary-0",
     type: "human",
@@ -624,9 +675,9 @@ test("computeSummarizationMovedMessages excludes already-summarized control mess
     summarizationAi2,
   ];
 
-  // priorSummary is in the summarized set, so it must not be re-archived.
+  // priorSummary is in the summarized set, so it must not enter the bridge.
   expect(
-    computeSummarizationMovedMessages(
+    computeSummarizationTransientMessages(
       liveThreadBeforeSummary,
       summarizationMessages,
       new Set([priorSummary.id!, "summary-1"]),
@@ -637,7 +688,7 @@ test("computeSummarizationMovedMessages excludes already-summarized control mess
 test("full summarization rescue pipeline keeps the conversation when history state lags (regression for #3825)", () => {
   // Exercises the whole rescue algorithm the hook runs: derive the moved
   // messages, buffer them, then merge against the post-summary thread while the
-  // archived-history React state is still stale (empty).
+  // canonical run-event page is still stale (empty).
   const removeAll = {
     id: "__remove_all__",
     type: "remove",
@@ -657,7 +708,7 @@ test("full summarization rescue pipeline keeps the conversation when history sta
   ];
   const summarizationMessages = [removeAll, hiddenSummary, summarizationAi2];
 
-  const moved = computeSummarizationMovedMessages(
+  const moved = computeSummarizationTransientMessages(
     liveThreadBeforeSummary,
     summarizationMessages,
     new Set([hiddenSummary.id!]),
@@ -666,7 +717,7 @@ test("full summarization rescue pipeline keeps the conversation when history sta
   const postSummaryThread = [hiddenSummary, summarizationAi2];
 
   const merged = mergeMessages(
-    resolvePreservedHistory(staleHistory, moved),
+    resolveTransientHistoryBridge(staleHistory, moved),
     postSummaryThread,
     [],
   );
@@ -678,4 +729,19 @@ test("full summarization rescue pipeline keeps the conversation when history sta
     "summary-1",
     "ai-2",
   ]);
+});
+
+test("refresh reconstructs the same 1-to-6 order from run events without a bridge", () => {
+  const canonical = Array.from({ length: 6 }, (_, index) => ({
+    id: `message-${index + 1}`,
+    type: index % 2 === 0 ? "human" : "ai",
+    content: String(index + 1),
+  })) as Message[];
+  const checkpointTail = canonical.slice(4);
+
+  expect(
+    mergeMessages(canonical, checkpointTail, []).map(
+      (message) => message.content,
+    ),
+  ).toEqual(["1", "2", "3", "4", "5", "6"]);
 });
