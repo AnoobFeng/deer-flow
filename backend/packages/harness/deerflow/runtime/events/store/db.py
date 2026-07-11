@@ -286,6 +286,8 @@ class DbRunEventStore(RunEventStore):
             return {}
         resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.get_last_visible_ai_seq_by_run")
         caller = RunEventRow.event_metadata["caller"].as_string()
+        # RunJournal canonically persists AI message rows as
+        # ``llm.ai.response``; ``ai_message`` remains for legacy compatibility.
         stmt = (
             select(RunEventRow.run_id, func.max(RunEventRow.seq))
             .where(

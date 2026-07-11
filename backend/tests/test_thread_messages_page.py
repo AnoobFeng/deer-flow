@@ -82,6 +82,31 @@ def test_thread_page_scans_past_middleware_chunks_to_fill_visible_page(monkeypat
     assert body["next_before_seq"] == 5
 
 
+def test_thread_page_scans_large_middleware_only_region_with_production_batch_size():
+    store = MemoryRunEventStore()
+
+    async def seed():
+        await _put_message(store, "run-old", "human", "visible-old")
+        for index in range(thread_runs.THREAD_MESSAGE_PAGE_SCAN_BATCH * 2):
+            await _put_message(store, "run-middle", "ai", f"middleware-{index}", caller="middleware:title")
+        await _put_message(store, "run-new", "human", "visible-new-human")
+        await _put_message(store, "run-new", "ai", "visible-new-ai")
+
+    asyncio.run(seed())
+    original_list_messages = store.list_messages
+    store.list_messages = AsyncMock(wraps=original_list_messages)
+    app = _make_app(store)
+    with TestClient(app) as client:
+        response = client.get("/api/threads/thread-1/messages/page?limit=2")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert [row["seq"] for row in body["data"]] == [404, 405]
+    assert body["has_more"] is True
+    assert body["next_before_seq"] == 404
+    assert store.list_messages.await_count == 3
+
+
 def test_thread_page_filters_all_successfully_superseded_runs_before_filling():
     store = MemoryRunEventStore()
 

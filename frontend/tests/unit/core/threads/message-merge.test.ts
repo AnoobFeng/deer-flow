@@ -1,5 +1,6 @@
 import type { Message } from "@langchain/langgraph-sdk";
 import { expect, test } from "@rstest/core";
+import { InfiniteQueryObserver, QueryClient } from "@tanstack/react-query";
 
 import {
   buildThreadMessagesPageUrl,
@@ -15,6 +16,7 @@ import {
   removeSetItems,
   resolveThreadTransientHistoryBridge,
   resolveTransientHistoryBridge,
+  type ThreadMessagesPageResponse,
 } from "@/core/threads/hooks";
 import type { RunMessage } from "@/core/threads/types";
 
@@ -409,6 +411,58 @@ test("flattenThreadHistoryPages retains backward pages when the latest page refr
       olderPage,
     ]).map((message) => message.seq),
   ).toEqual([1, 2, 3, 4, 5]);
+});
+
+test("infinite history refetch recalculates older-page cursors from the refreshed newest page", async () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const queryKey = ["thread-messages", "thread-1"] as const;
+  const requestedCursors: Array<number | null> = [];
+  let availableSeqs = Array.from({ length: 9 }, (_, index) => index + 1);
+
+  const observer = new InfiniteQueryObserver(queryClient, {
+    queryKey,
+    initialPageParam: null as number | null,
+    queryFn: ({ pageParam }): ThreadMessagesPageResponse => {
+      requestedCursors.push(pageParam);
+      const eligible = availableSeqs.filter(
+        (seq) => pageParam === null || seq < pageParam,
+      );
+      const pageSeqs = eligible.slice(-3);
+      return {
+        data: pageSeqs.map(runMessage),
+        has_more: eligible.length > pageSeqs.length,
+        next_before_seq:
+          eligible.length > pageSeqs.length ? (pageSeqs[0] ?? null) : null,
+      };
+    },
+    getNextPageParam: (lastPage) =>
+      lastPage.has_more ? (lastPage.next_before_seq ?? undefined) : undefined,
+  });
+  const unsubscribe = observer.subscribe(() => undefined);
+
+  await observer.refetch();
+  await observer.fetchNextPage();
+  expect(requestedCursors).toEqual([null, 7]);
+
+  availableSeqs = Array.from({ length: 12 }, (_, index) => index + 1);
+  requestedCursors.length = 0;
+  await queryClient.invalidateQueries({ queryKey });
+
+  expect(requestedCursors).toEqual([null, 10]);
+  expect(
+    observer
+      .getCurrentResult()
+      .data?.pages.map((page) => page.data.map((message) => message.seq)),
+  ).toEqual([
+    [10, 11, 12],
+    [7, 8, 9],
+  ]);
+  expect(observer.getCurrentResult().data?.pageParams).toEqual([null, 10]);
+
+  unsubscribe();
+  queryClient.clear();
 });
 
 test("removeSetItems removes pending superseded ids after submit failure", () => {

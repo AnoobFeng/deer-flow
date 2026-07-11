@@ -319,6 +319,9 @@ export function mergeMessages(
     }),
   );
   const replacementByIdentity = new Map<string, Message>();
+  // This uses the same identity-anchor weaving shape as
+  // resolveTransientHistoryBridge, but intentionally remains separate: live
+  // messages may replace canonical copies and identity-less entries survive.
   const beforeAnchor = new Map<string, Message[]>();
   let pending: Message[] = [];
   let lastAnchorIdentity: string | undefined;
@@ -485,6 +488,9 @@ export function resolveTransientHistoryBridge(
       return identity ? [[identity, message] as const] : [];
     }),
   );
+  // This mirrors mergeMessages' identity-anchor weaving shape, but transient
+  // messages never replace canonical copies and identity-less entries are
+  // intentionally excluded to avoid permanent duplicates.
   const beforeAnchor = new Map<string, Message[]>();
   const emittedMissingIdentities = new Set<string>();
   let pending: Message[] = [];
@@ -1654,26 +1660,36 @@ export function useThreadStream({
     humanMessageCount,
   );
 
-  if (
+  const transientHistoryOrder =
     transientHistoryBridgeRef.current.length > 0 &&
     transientHistoryThreadIdRef.current === threadId
-  ) {
-    // Keep extending the non-rendering order skeleton with the current live
-    // tail. If a long run advances the newest history page beyond every
-    // originally captured identity, a recent checkpoint identity still anchors
-    // the older rescue ahead of that page instead of letting it fall to the end.
-    transientHistoryOrderRef.current = mergeTransientHistoryBridgeOrder(
-      transientHistoryOrderRef.current,
-      persistedMessages,
-    );
-  }
+      ? mergeTransientHistoryBridgeOrder(
+          transientHistoryOrderRef.current,
+          persistedMessages,
+        )
+      : transientHistoryOrderRef.current;
+
+  // Commit the extended non-rendering order skeleton after React commits this
+  // render. The local value above keeps this render correctly anchored without
+  // mutating a ref during render.
+  useEffect(() => {
+    if (
+      transientHistoryBridgeRef.current.length > 0 &&
+      transientHistoryThreadIdRef.current === threadId
+    ) {
+      transientHistoryOrderRef.current = mergeTransientHistoryBridgeOrder(
+        transientHistoryOrderRef.current,
+        persistedMessages,
+      );
+    }
+  }, [persistedMessages, threadId]);
 
   const effectiveHistory = resolveThreadTransientHistoryBridge(
     visibleHistory,
     transientHistoryBridgeRef.current,
     transientHistoryThreadIdRef.current,
     threadId,
-    transientHistoryOrderRef.current,
+    transientHistoryOrder,
   );
   const mergedMessages = mergeMessages(
     effectiveHistory,
