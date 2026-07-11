@@ -299,11 +299,6 @@ export function mergeMessages(
   threadMessages: Message[],
   optimisticMessages: Message[],
 ): Message[] {
-  // Only visible live messages should trim overlapping history. Hidden messages
-  // are UI control messages in this path, not observability records; any hidden
-  // message that must survive as task/tracing data should use custom events or a
-  // separate state channel instead of participating in this overlap heuristic.
-
   const savedTurnDurations = new Map<string, number>();
   for (const msg of historyMessages) {
     const identity = messageIdentity(msg);
@@ -315,33 +310,77 @@ export function mergeMessages(
     }
   }
 
-  const threadMessageIds = new Set(
-    threadMessages
-      .filter((message) => !isHiddenFromUIMessage(message))
-      .map(messageIdentity)
-      .filter(isNonEmptyString),
+  const canonical = dedupeMessagesByIdentity(historyMessages);
+  const live = dedupeMessagesByIdentity(threadMessages);
+  const canonicalByIdentity = new Map(
+    canonical.flatMap((message) => {
+      const identity = messageIdentity(message);
+      return identity ? [[identity, message] as const] : [];
+    }),
   );
+  const replacementByIdentity = new Map<string, Message>();
+  const beforeAnchor = new Map<string, Message[]>();
+  let pending: Message[] = [];
+  let lastAnchorIdentity: string | undefined;
 
-  // The overlap is a contiguous suffix of historyMessages (newest history == oldest thread).
-  // Scan from the end: shrink cutoff while messages are already in thread, stop as soon as
-  // we hit one that isn't — everything before that point is non-overlapping.
-  let cutoff = historyMessages.length;
-  for (let i = historyMessages.length - 1; i >= 0; i--) {
-    const msg = historyMessages[i];
-    if (!msg) {
+  // A summarized checkpoint is not necessarily a contiguous history suffix:
+  // middleware may retain protected prompt/input messages at the front and a
+  // recent tail at the back. Treat every shared identity as an ordering anchor,
+  // replacing the canonical copy in place. New live messages are woven before
+  // the next shared anchor (or after the last one), so a protected early input
+  // can never be moved to the tail by global last-copy deduplication.
+  for (const message of live) {
+    const identity = messageIdentity(message);
+    const canonicalMessage = identity
+      ? canonicalByIdentity.get(identity)
+      : undefined;
+    if (!identity || !canonicalMessage) {
+      pending.push(message);
       continue;
     }
-    const identity = messageIdentity(msg);
-    if (identity && threadMessageIds.has(identity)) {
-      cutoff = i;
-    } else {
-      break;
+
+    if (pending.length > 0) {
+      beforeAnchor.set(identity, [
+        ...(beforeAnchor.get(identity) ?? []),
+        ...pending,
+      ]);
+      pending = [];
+    }
+    lastAnchorIdentity = identity;
+
+    // A hidden checkpoint control message must not replace a visible canonical
+    // user turn that happens to reuse its identity. In every other case the
+    // live checkpoint copy is fresher and replaces history without moving it.
+    if (
+      !isHiddenFromUIMessage(message) ||
+      isHiddenFromUIMessage(canonicalMessage)
+    ) {
+      replacementByIdentity.set(identity, message);
+    }
+  }
+
+  let canonicalAndLive: Message[];
+  if (!lastAnchorIdentity) {
+    canonicalAndLive = [...canonical, ...live];
+  } else {
+    canonicalAndLive = [];
+    for (const message of canonical) {
+      const identity = messageIdentity(message);
+      if (identity) {
+        canonicalAndLive.push(...(beforeAnchor.get(identity) ?? []));
+      }
+      const replacement = identity
+        ? replacementByIdentity.get(identity)
+        : undefined;
+      canonicalAndLive.push(replacement ?? message);
+      if (identity === lastAnchorIdentity) {
+        canonicalAndLive.push(...pending);
+      }
     }
   }
 
   const merged = dedupeMessagesByIdentity([
-    ...historyMessages.slice(0, cutoff),
-    ...threadMessages,
+    ...canonicalAndLive,
     ...optimisticMessages,
   ]);
 
@@ -408,15 +447,19 @@ export function computeSummarizationTransientMessages(
  * waiting for the journal flush/refetch lifecycle. Reading the captured turns
  * from a synchronous transient buffer keeps the merge correct during that gap.
  *
- * The rescued messages are the oldest live turns, so they follow whatever the
- * already-loaded history holds. Only messages still missing from history are
- * appended: once history absorbs a rescued message, its live copy stays
- * authoritative (the buffered copy is an older snapshot and must never overwrite
- * it), and ordering is preserved.
+ * Canonical history is cursor-paginated from newest to oldest. A rescued turn
+ * can therefore be older than the first row in the currently loaded page even
+ * though both came from the same pre-compression checkpoint. ``bridgeOrder``
+ * retains identities that canonical history has already confirmed so missing
+ * rescued turns can be inserted next to an overlapping anchor instead of being
+ * blindly appended after the newest page. Canonical copies always win.
  */
 export function resolveTransientHistoryBridge(
   visibleHistory: Message[],
   transientMessages: Message[],
+  bridgeOrder: readonly string[] = transientMessages
+    .map(messageIdentity)
+    .filter(isNonEmptyString),
 ): Message[] {
   if (transientMessages.length === 0) {
     return visibleHistory;
@@ -435,14 +478,130 @@ export function resolveTransientHistoryBridge(
   if (missing.length === 0) {
     return visibleHistory;
   }
-  return [...visibleHistory, ...missing];
+
+  const missingByIdentity = new Map(
+    missing.flatMap((message) => {
+      const identity = messageIdentity(message);
+      return identity ? [[identity, message] as const] : [];
+    }),
+  );
+  const beforeAnchor = new Map<string, Message[]>();
+  const emittedMissingIdentities = new Set<string>();
+  let pending: Message[] = [];
+  let lastAnchorIdentity: string | undefined;
+
+  for (const identity of bridgeOrder) {
+    if (presentIdentities.has(identity)) {
+      if (pending.length > 0) {
+        beforeAnchor.set(identity, [
+          ...(beforeAnchor.get(identity) ?? []),
+          ...pending,
+        ]);
+        pending = [];
+      }
+      lastAnchorIdentity = identity;
+      continue;
+    }
+    const message = missingByIdentity.get(identity);
+    if (message && !emittedMissingIdentities.has(identity)) {
+      pending.push(message);
+      emittedMissingIdentities.add(identity);
+    }
+  }
+
+  // No bridge identity overlaps canonical history. This is the original
+  // persistence-gap case: loaded history is older and the rescued live turns
+  // belong after it.
+  if (!lastAnchorIdentity) {
+    return [...visibleHistory, ...missing];
+  }
+
+  // A candidate added before its ordering snapshot (or carrying an identity
+  // absent from that snapshot) cannot be anchored. Keep it in capture order at
+  // the trailing edge of the anchored bridge rather than dropping it.
+  for (const message of missing) {
+    const identity = messageIdentity(message);
+    if (identity && !emittedMissingIdentities.has(identity)) {
+      pending.push(message);
+      emittedMissingIdentities.add(identity);
+    }
+  }
+
+  const resolved: Message[] = [];
+  for (const message of visibleHistory) {
+    const identity = messageIdentity(message);
+    if (identity) {
+      resolved.push(...(beforeAnchor.get(identity) ?? []));
+    }
+    resolved.push(message);
+    if (identity === lastAnchorIdentity) {
+      resolved.push(...pending);
+    }
+  }
+  return resolved;
 }
 
 export function mergeTransientHistoryBridge(
   currentBridge: Message[],
   capturedMessages: Message[],
 ): Message[] {
-  return dedupeMessagesByIdentity([...currentBridge, ...capturedMessages]);
+  const merged = dedupeMessagesByIdentity(currentBridge);
+  const indexByIdentity = new Map<string, number>();
+  merged.forEach((message, index) => {
+    const identity = messageIdentity(message);
+    if (identity) {
+      indexByIdentity.set(identity, index);
+    }
+  });
+
+  for (const captured of dedupeMessagesByIdentity(capturedMessages)) {
+    const identity = messageIdentity(captured);
+    const existingIndex = identity
+      ? indexByIdentity.get(identity)
+      : undefined;
+    if (existingIndex === undefined) {
+      if (identity) {
+        indexByIdentity.set(identity, merged.length);
+      }
+      merged.push(captured);
+      continue;
+    }
+
+    const existing = merged[existingIndex];
+    if (
+      existing &&
+      (!isHiddenFromUIMessage(captured) || isHiddenFromUIMessage(existing))
+    ) {
+      // Refresh the buffered snapshot without moving its first-known
+      // chronological position. Repeated compression can recapture protected
+      // prefix messages before a newer tail.
+      merged[existingIndex] = captured;
+    }
+  }
+  return merged;
+}
+
+/**
+ * Preserve the complete checkpoint-relative identity order independently from
+ * bridge candidates. Confirmed candidates are pruned from the render buffer,
+ * but their identities remain useful as non-rendering pagination anchors.
+ */
+export function mergeTransientHistoryBridgeOrder(
+  currentOrder: readonly string[],
+  capturedMessages: Message[],
+): string[] {
+  const capturedOrder = dedupeMessagesByIdentity(capturedMessages)
+    .map(messageIdentity)
+    .filter(isNonEmptyString);
+  const merged = [...currentOrder];
+  const seen = new Set(currentOrder);
+  for (const identity of capturedOrder) {
+    if (!seen.has(identity)) {
+      seen.add(identity);
+      merged.push(identity);
+    }
+  }
+  return merged;
 }
 
 export function resolveThreadTransientHistoryBridge(
@@ -450,11 +609,16 @@ export function resolveThreadTransientHistoryBridge(
   transientMessages: Message[],
   bridgeThreadId: string | null,
   currentThreadId: string | null | undefined,
+  bridgeOrder?: readonly string[],
 ): Message[] {
   if (!bridgeThreadId || bridgeThreadId !== currentThreadId) {
     return visibleHistory;
   }
-  return resolveTransientHistoryBridge(visibleHistory, transientMessages);
+  return resolveTransientHistoryBridge(
+    visibleHistory,
+    transientMessages,
+    bridgeOrder,
+  );
 }
 
 /**
@@ -911,6 +1075,10 @@ export function useThreadStream({
           _messages,
           summarizedRef.current ?? new Set<string>(),
         );
+        transientHistoryOrderRef.current = mergeTransientHistoryBridgeOrder(
+          transientHistoryOrderRef.current,
+          transientMessages,
+        );
         transientHistoryBridgeRef.current = mergeTransientHistoryBridge(
           transientHistoryBridgeRef.current,
           transientMessages,
@@ -1074,6 +1242,10 @@ export function useThreadStream({
   // tail before the canonical run-event page refetch observes the journal
   // flush. It is never appended into useThreadHistory's persisted pages.
   const transientHistoryBridgeRef = useRef<Message[]>([]);
+  // Full identity order of each captured checkpoint. Confirmed bridge entries
+  // are pruned from the message buffer, but remain here as non-rendering
+  // anchors so an older rescue can be placed before a newest-first page.
+  const transientHistoryOrderRef = useRef<string[]>([]);
   const transientHistoryThreadIdRef = useRef<string | null>(null);
   const summarizedRef = useRef<Set<string>>(null);
   // Track human message count before sending to prevent clearing optimistic
@@ -1092,6 +1264,7 @@ export function useThreadStream({
     sendInFlightRef.current = false;
     messagesRef.current = [];
     transientHistoryBridgeRef.current = [];
+    transientHistoryOrderRef.current = [];
     transientHistoryThreadIdRef.current = null;
     summarizedRef.current = new Set<string>();
     pendingUsageBaselineMessageIdsRef.current = new Set();
@@ -1110,6 +1283,7 @@ export function useThreadStream({
       visibleHistory,
     );
     if (transientHistoryBridgeRef.current.length === 0) {
+      transientHistoryOrderRef.current = [];
       transientHistoryThreadIdRef.current = null;
     }
   }, [visibleHistory]);
@@ -1482,11 +1656,26 @@ export function useThreadStream({
     humanMessageCount,
   );
 
+  if (
+    transientHistoryBridgeRef.current.length > 0 &&
+    transientHistoryThreadIdRef.current === threadId
+  ) {
+    // Keep extending the non-rendering order skeleton with the current live
+    // tail. If a long run advances the newest history page beyond every
+    // originally captured identity, a recent checkpoint identity still anchors
+    // the older rescue ahead of that page instead of letting it fall to the end.
+    transientHistoryOrderRef.current = mergeTransientHistoryBridgeOrder(
+      transientHistoryOrderRef.current,
+      persistedMessages,
+    );
+  }
+
   const effectiveHistory = resolveThreadTransientHistoryBridge(
     visibleHistory,
     transientHistoryBridgeRef.current,
     transientHistoryThreadIdRef.current,
     threadId,
+    transientHistoryOrderRef.current,
   );
   const mergedMessages = mergeMessages(
     effectiveHistory,

@@ -9,6 +9,7 @@ import {
   getSummarizationMiddlewareMessages,
   getVisibleOptimisticMessages,
   mergeTransientHistoryBridge,
+  mergeTransientHistoryBridgeOrder,
   mergeMessages,
   pruneConfirmedTransientMessages,
   removeSetItems,
@@ -67,6 +68,58 @@ test("mergeMessages lets live thread messages replace overlapping history", () =
   expect(mergeMessages([oldHuman, oldAi], [liveHuman, liveAi], [])).toEqual([
     liveHuman,
     liveAi,
+  ]);
+});
+
+test("mergeMessages keeps a protected pre-compression input at its canonical position", () => {
+  const canonicalInput = {
+    id: "input-1",
+    type: "human",
+    content: "写一个算法PDF",
+  } as Message;
+  const checkpointInput = {
+    id: "input-1",
+    type: "human",
+    content: [{ type: "text", text: "写一个算法PDF" }],
+  } as Message;
+  const clarificationCard = {
+    id: "clarification-card",
+    type: "tool",
+    tool_call_id: "clarification-call",
+    content: "Create a new PDF",
+  } as Message;
+  const directionAnswer = {
+    id: "input-3",
+    type: "human",
+    content: "二叉树相关的即可",
+  } as Message;
+  const canonicalRetainedTail = {
+    id: "retained-ai",
+    type: "ai",
+    content: "persisted tail",
+  } as Message;
+  const checkpointRetainedTail = {
+    id: "retained-ai",
+    type: "ai",
+    content: "live tail",
+  } as Message;
+
+  expect(
+    mergeMessages(
+      [
+        canonicalInput,
+        clarificationCard,
+        directionAnswer,
+        canonicalRetainedTail,
+      ],
+      [checkpointInput, checkpointRetainedTail],
+      [],
+    ),
+  ).toEqual([
+    checkpointInput,
+    clarificationCard,
+    directionAnswer,
+    checkpointRetainedTail,
   ]);
 });
 
@@ -489,6 +542,84 @@ test("resolveTransientHistoryBridge appends rescued messages after canonical his
   ).toEqual([olderLoadedHuman, ...summarizationMovedMessages]);
 });
 
+test("resolveTransientHistoryBridge inserts paginated compression rescue before its canonical anchor", () => {
+  // Real regression shape from thread 4e81444d-c6ce-471e-93fd-b6ddb18dc938:
+  // the default history page starts at event seq=35, while the clarification
+  // conversation lives at seq=2..14. Context compression captured both the
+  // old turns and a later message that overlaps the canonical page. After the
+  // overlap is confirmed/pruned, its identity must remain as an ordering
+  // anchor instead of letting the old turns fall through to the page tail.
+  const clarificationRequest = {
+    id: "clarification-request",
+    type: "ai",
+    content: "Which PDF should I create?",
+  } as Message;
+  const clarificationCard = {
+    id: "clarification-card",
+    tool_call_id: "clarification-call",
+    type: "tool",
+    content: "Create a new algorithm PDF",
+  } as Message;
+  const clarificationAnswer = {
+    id: "clarification-answer",
+    type: "human",
+    content: "Create a new algorithm PDF",
+  } as Message;
+  const directionQuestion = {
+    id: "direction-question",
+    type: "ai",
+    content: "Which topic?",
+  } as Message;
+  const directionAnswer = {
+    id: "direction-answer",
+    type: "human",
+    content: "Binary trees",
+  } as Message;
+  const pageAnchor = {
+    id: "event-seq-35",
+    type: "tool",
+    tool_call_id: "event-seq-35-call",
+    content: "first message on the latest history page",
+  } as Message;
+  const latestAnswer = {
+    id: "event-seq-88",
+    type: "ai",
+    content: "latest answer",
+  } as Message;
+  const captured = [
+    summarizationHuman1,
+    clarificationRequest,
+    clarificationCard,
+    clarificationAnswer,
+    directionQuestion,
+    directionAnswer,
+    pageAnchor,
+  ];
+  const canonical = [pageAnchor, latestAnswer];
+  const missingAfterCanonicalRefetch = pruneConfirmedTransientMessages(
+    captured,
+    canonical,
+  );
+  const bridgeOrder = mergeTransientHistoryBridgeOrder([], captured);
+
+  expect(
+    resolveTransientHistoryBridge(
+      canonical,
+      missingAfterCanonicalRefetch,
+      bridgeOrder,
+    ).map((message) => message.id),
+  ).toEqual([
+    "human-1",
+    "clarification-request",
+    "clarification-card",
+    "clarification-answer",
+    "direction-question",
+    "direction-answer",
+    "event-seq-35",
+    "event-seq-88",
+  ]);
+});
+
 test("resolveTransientHistoryBridge does not duplicate once canonical history catches up", () => {
   expect(
     resolveTransientHistoryBridge(
@@ -554,6 +685,94 @@ test("mergeTransientHistoryBridge preserves chronology across repeated compressi
     "ai-1",
     "human-2",
     "human-3",
+  ]);
+});
+
+test("mergeTransientHistoryBridge does not move a protected input recaptured by later compression", () => {
+  const protectedInput = {
+    id: "protected-input",
+    type: "human",
+    content: "写一个算法PDF",
+  } as Message;
+  const clarification = {
+    id: "clarification",
+    type: "ai",
+    content: "Which kind?",
+  } as Message;
+  const laterTail = {
+    id: "later-tail",
+    type: "ai",
+    content: "Working on the PDF",
+  } as Message;
+
+  const firstBridge = mergeTransientHistoryBridge([], [
+    protectedInput,
+    clarification,
+  ]);
+  const secondBridge = mergeTransientHistoryBridge(firstBridge, [
+    { ...protectedInput, content: [{ type: "text", text: "写一个算法PDF" }] },
+    laterTail,
+  ]);
+
+  expect(secondBridge.map((message) => message.id)).toEqual([
+    "protected-input",
+    "clarification",
+    "later-tail",
+  ]);
+  expect(secondBridge[0]?.content).toEqual([
+    { type: "text", text: "写一个算法PDF" },
+  ]);
+});
+
+test("mergeTransientHistoryBridgeOrder retains confirmed overlap as a non-rendering anchor", () => {
+  const firstOrder = mergeTransientHistoryBridgeOrder([], [
+    summarizationHuman1,
+    summarizationAi1,
+    summarizationHuman2,
+  ]);
+  const secondOrder = mergeTransientHistoryBridgeOrder(firstOrder, [
+    summarizationHuman2,
+    summarizationAi2,
+  ]);
+
+  expect(secondOrder).toEqual([
+    "message:human-1",
+    "message:ai-1",
+    "message:human-2",
+    "message:ai-2",
+  ]);
+});
+
+test("mergeTransientHistoryBridgeOrder keeps a recaptured protected prefix in place", () => {
+  const protectedInput = {
+    id: "protected-input",
+    type: "human",
+    content: "first",
+  } as Message;
+  const oldTail = {
+    id: "old-tail",
+    type: "ai",
+    content: "old",
+  } as Message;
+  const newTail = {
+    id: "new-tail",
+    type: "ai",
+    content: "new",
+  } as Message;
+
+  const firstOrder = mergeTransientHistoryBridgeOrder([], [
+    protectedInput,
+    oldTail,
+  ]);
+  const secondOrder = mergeTransientHistoryBridgeOrder(firstOrder, [
+    protectedInput,
+    newTail,
+  ]);
+
+  expect(secondOrder).toEqual([
+    "message:protected-input",
+    "message:old-tail",
+    "message:new-tail",
   ]);
 });
 
