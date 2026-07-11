@@ -705,10 +705,10 @@ test("mergeTransientHistoryBridge does not move a protected input recaptured by 
     content: "Working on the PDF",
   } as Message;
 
-  const firstBridge = mergeTransientHistoryBridge([], [
-    protectedInput,
-    clarification,
-  ]);
+  const firstBridge = mergeTransientHistoryBridge(
+    [],
+    [protectedInput, clarification],
+  );
   const secondBridge = mergeTransientHistoryBridge(firstBridge, [
     { ...protectedInput, content: [{ type: "text", text: "写一个算法PDF" }] },
     laterTail,
@@ -725,11 +725,10 @@ test("mergeTransientHistoryBridge does not move a protected input recaptured by 
 });
 
 test("mergeTransientHistoryBridgeOrder retains confirmed overlap as a non-rendering anchor", () => {
-  const firstOrder = mergeTransientHistoryBridgeOrder([], [
-    summarizationHuman1,
-    summarizationAi1,
-    summarizationHuman2,
-  ]);
+  const firstOrder = mergeTransientHistoryBridgeOrder(
+    [],
+    [summarizationHuman1, summarizationAi1, summarizationHuman2],
+  );
   const secondOrder = mergeTransientHistoryBridgeOrder(firstOrder, [
     summarizationHuman2,
     summarizationAi2,
@@ -760,10 +759,10 @@ test("mergeTransientHistoryBridgeOrder keeps a recaptured protected prefix in pl
     content: "new",
   } as Message;
 
-  const firstOrder = mergeTransientHistoryBridgeOrder([], [
-    protectedInput,
-    oldTail,
-  ]);
+  const firstOrder = mergeTransientHistoryBridgeOrder(
+    [],
+    [protectedInput, oldTail],
+  );
   const secondOrder = mergeTransientHistoryBridgeOrder(firstOrder, [
     protectedInput,
     newTail,

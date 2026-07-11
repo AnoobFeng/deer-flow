@@ -556,9 +556,7 @@ export function mergeTransientHistoryBridge(
 
   for (const captured of dedupeMessagesByIdentity(capturedMessages)) {
     const identity = messageIdentity(captured);
-    const existingIndex = identity
-      ? indexByIdentity.get(identity)
-      : undefined;
+    const existingIndex = identity ? indexByIdentity.get(identity) : undefined;
     if (existingIndex === undefined) {
       if (identity) {
         indexByIdentity.set(identity, merged.length);
