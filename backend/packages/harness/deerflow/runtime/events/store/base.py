@@ -103,6 +103,14 @@ class RunEventStore(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def get_last_visible_ai_seq_by_run(
+        self,
+        thread_id: str,
+        run_ids: set[str],
+    ) -> dict[str, int]:
+        """Return each run's last non-middleware AI message sequence."""
+
+    @abc.abstractmethod
     async def count_messages(self, thread_id: str) -> int:
         """Count displayable messages (category=message) in a thread."""
 

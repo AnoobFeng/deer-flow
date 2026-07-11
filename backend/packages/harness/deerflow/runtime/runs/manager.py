@@ -471,6 +471,60 @@ class RunManager:
                     logger.warning("Failed to map store row for run %s", run_id, exc_info=True)
         return sorted(records_by_id.values(), key=lambda record: record.created_at, reverse=True)[:limit]
 
+    async def list_successful_regenerate_sources(self, thread_id: str, *, user_id: str | None = None) -> set[str]:
+        """Return all source runs superseded by successful regenerations.
+
+        Unlike :meth:`list_by_thread`, this query is intentionally unbounded.
+        Current-process records override matching persisted status: a latest
+        in-memory failure must not inherit an older successful store snapshot.
+        Store failures propagate because supersession filtering is required for
+        correct pagination.
+        """
+        async with self._lock:
+            memory_records = [record for record in self._thread_records_locked(thread_id) if user_id is None or record.user_id == user_id]
+
+        sources = set(await self._store.list_successful_regenerate_sources(thread_id, user_id=user_id)) if self._store is not None else set()
+        for record in memory_records:
+            source = record.metadata.get("regenerate_from_run_id")
+            if not isinstance(source, str) or not source:
+                continue
+            sources.discard(source)
+            if record.status == RunStatus.success:
+                sources.add(source)
+        return sources
+
+    async def get_many_by_thread(
+        self,
+        thread_id: str,
+        run_ids: set[str],
+        *,
+        user_id: str | None = None,
+    ) -> dict[str, RunRecord]:
+        """Batch-load selected thread runs with in-memory records preferred."""
+        if not run_ids:
+            return {}
+        async with self._lock:
+            records_by_id = {record.run_id: record for record in self._thread_records_locked(thread_id) if record.run_id in run_ids and (user_id is None or record.user_id == user_id)}
+        if self._store is None:
+            return records_by_id
+
+        remaining = run_ids - records_by_id.keys()
+        if not remaining:
+            return records_by_id
+        try:
+            rows = await self._store.get_many_by_thread(thread_id, set(remaining), user_id=user_id)
+        except Exception:
+            logger.warning("Failed to batch-hydrate runs for thread %s", thread_id, exc_info=True)
+            return records_by_id
+        for run_id, row in rows.items():
+            if run_id in records_by_id:
+                continue
+            try:
+                records_by_id[run_id] = self._record_from_store(row)
+            except Exception:
+                logger.warning("Failed to map store row for run %s", run_id, exc_info=True)
+        return records_by_id
+
     async def set_status(self, run_id: str, status: RunStatus, *, error: str | None = None) -> None:
         """Transition a run to a new status."""
         async with self._lock:

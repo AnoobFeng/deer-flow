@@ -228,26 +228,6 @@ function dedupeRunMessagesByIdentity(messages: RunMessage[]): RunMessage[] {
   });
 }
 
-export function getSupersededRunIds(
-  runs: Run[] | undefined,
-  pendingSupersededRunIds?: ReadonlySet<string>,
-) {
-  const ids = new Set(pendingSupersededRunIds ?? []);
-  for (const run of runs ?? []) {
-    if (run.status !== "success") {
-      continue;
-    }
-    const metadata = run.metadata;
-    if (metadata && typeof metadata === "object") {
-      const fromRunId = Reflect.get(metadata, "regenerate_from_run_id");
-      if (typeof fromRunId === "string" && fromRunId) {
-        ids.add(fromRunId);
-      }
-    }
-  }
-  return ids;
-}
-
 export function removeSetItems<T>(
   values: ReadonlySet<T>,
   itemsToRemove: Iterable<T>,
@@ -279,71 +259,22 @@ export function buildVisibleHistoryMessages(
   ]);
 }
 
-export function findLatestUnloadedRunIndex(
-  runs: Run[],
-  loadedRunIds: ReadonlySet<string>,
-): number {
-  for (let i = 0; i < runs.length; i++) {
-    const run = runs[i];
-    if (run && !loadedRunIds.has(run.run_id)) {
-      return i;
-    }
-  }
-  return -1;
-}
-
-export const MAX_CONSECUTIVE_EMPTY_RUN_LOADS = 5;
-
-export function shouldAutoContinueOnEmptyRun(
-  fetchedMessageCount: number,
-  consecutiveEmptyLoads: number,
-  maxConsecutiveEmptyLoads: number = MAX_CONSECUTIVE_EMPTY_RUN_LOADS,
-): boolean {
-  return (
-    fetchedMessageCount === 0 &&
-    consecutiveEmptyLoads < maxConsecutiveEmptyLoads
-  );
-}
-
-type RunMessagesPageResponse = {
+export type ThreadMessagesPageResponse = {
   data: RunMessage[];
-  has_more?: boolean;
-  hasMore?: boolean;
+  has_more: boolean;
+  next_before_seq: number | null;
 };
 
-export function runMessagesPageHasMore(result: RunMessagesPageResponse) {
-  return result.has_more ?? result.hasMore ?? false;
-}
+export const threadHistoryQueryKey = (threadId: string) =>
+  ["thread-messages", threadId] as const;
 
-export function getOldestRunMessageSeq(messages: RunMessage[]) {
-  let oldestSeq: number | null = null;
-  for (const message of messages) {
-    if (typeof message.seq !== "number") {
-      continue;
-    }
-    oldestSeq =
-      oldestSeq === null ? message.seq : Math.min(oldestSeq, message.seq);
-  }
-  return oldestSeq;
-}
-
-export function getNextRunMessagesBeforeSeq(
-  result: RunMessagesPageResponse,
-): number | null | undefined {
-  if (!runMessagesPageHasMore(result)) {
-    return null;
-  }
-  return getOldestRunMessageSeq(result.data) ?? undefined;
-}
-
-export function buildRunMessagesUrl(
+export function buildThreadMessagesPageUrl(
   baseUrl: string,
   threadId: string,
-  runId: string,
   beforeSeq?: number,
 ) {
   const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
-  const path = `/api/threads/${encodeURIComponent(threadId)}/runs/${encodeURIComponent(runId)}/messages`;
+  const path = `/api/threads/${encodeURIComponent(threadId)}/messages/page`;
   const url = new URL(
     `${normalizedBaseUrl}${path}`,
     typeof window !== "undefined" ? window.location.origin : "http://localhost",
@@ -352,6 +283,17 @@ export function buildRunMessagesUrl(
     url.searchParams.set("before_seq", String(beforeSeq));
   }
   return normalizedBaseUrl ? url.toString() : `${url.pathname}${url.search}`;
+}
+
+export function flattenThreadHistoryPages(
+  pages: ThreadMessagesPageResponse[],
+): RunMessage[] {
+  return dedupeRunMessagesByIdentity(
+    pages
+      .slice()
+      .reverse()
+      .flatMap((page) => page.data),
+  );
 }
 
 export function mergeMessages(
@@ -680,6 +622,9 @@ export function invalidateStoppedThreadCaches(
   }
 
   void queryClient.invalidateQueries({ queryKey: ["thread", threadId] });
+  void queryClient.invalidateQueries({
+    queryKey: threadHistoryQueryKey(threadId),
+  });
   void queryClient.invalidateQueries({
     queryKey: ["thread", "metadata", threadId, isMock],
   });
@@ -1581,198 +1526,81 @@ export function useThreadHistory(
   threadId: string,
   { enabled = true, pendingSupersededRunIds }: ThreadHistoryOptions = {},
 ) {
-  const runs = useThreadRuns(threadId, { enabled });
-  const threadIdRef = useRef(threadId);
-  const runsRef = useRef(runs.data ?? []);
-  const indexRef = useRef(-1);
-  const loadingRef = useRef(false);
-  const pendingLoadRef = useRef(false);
-  const loadingRunIdRef = useRef<string | null>(null);
-  const loadedRunIdsRef = useRef<Set<string>>(new Set());
-  const runBeforeSeqRef = useRef<Map<string, number>>(new Map());
-  const loadGenerationRef = useRef(0);
-  const [loading, setLoading] = useState(false);
-  const [messageRows, setMessageRows] = useState<RunMessage[]>([]);
   const [appendedMessages, setAppendedMessages] = useState<Message[]>([]);
 
-  const supersededRunIds = useMemo(() => {
-    return getSupersededRunIds(runs.data, pendingSupersededRunIds);
-  }, [pendingSupersededRunIds, runs.data]);
+  const historyQuery = useInfiniteQuery<
+    ThreadMessagesPageResponse,
+    Error,
+    InfiniteData<ThreadMessagesPageResponse>,
+    ReturnType<typeof threadHistoryQueryKey>,
+    number | null
+  >({
+    queryKey: threadHistoryQueryKey(threadId),
+    enabled: enabled && Boolean(threadId),
+    initialPageParam: null,
+    queryFn: async ({ pageParam, signal }) => {
+      const url = buildThreadMessagesPageUrl(
+        getBackendBaseURL(),
+        threadId,
+        pageParam ?? undefined,
+      );
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        signal,
+      });
+      if (!response.ok) {
+        throw new Error(
+          await readResponseErrorMessage(
+            response,
+            "Failed to load thread history.",
+          ),
+        );
+      }
+      return (await response.json()) as ThreadMessagesPageResponse;
+    },
+    getNextPageParam: (lastPage) =>
+      lastPage.has_more ? (lastPage.next_before_seq ?? undefined) : undefined,
+  });
+
+  const messageRows = useMemo(
+    () => flattenThreadHistoryPages(historyQuery.data?.pages ?? []),
+    [historyQuery.data?.pages],
+  );
 
   const messages = useMemo(() => {
     return buildVisibleHistoryMessages(
       messageRows,
-      supersededRunIds,
+      pendingSupersededRunIds ?? new Set<string>(),
       appendedMessages,
     );
-  }, [appendedMessages, messageRows, supersededRunIds]);
+  }, [appendedMessages, messageRows, pendingSupersededRunIds]);
 
-  const loadMessages = useCallback(async () => {
-    if (!enabled) {
-      return;
-    }
-    const loadGeneration = loadGenerationRef.current;
-    if (loadingRef.current) {
-      const pendingRunIndex = findLatestUnloadedRunIndex(
-        runsRef.current,
-        loadedRunIdsRef.current,
-      );
-      const pendingRun = runsRef.current[pendingRunIndex];
-      if (pendingRun && pendingRun.run_id !== loadingRunIdRef.current) {
-        pendingLoadRef.current = true;
-      }
-      return;
-    }
-    if (runsRef.current.length === 0) {
-      return;
-    }
-
-    loadingRef.current = true;
-    setLoading(true);
-
-    try {
-      let consecutiveEmptyLoads = 0;
-      do {
-        pendingLoadRef.current = false;
-
-        const nextRunIndex = findLatestUnloadedRunIndex(
-          runsRef.current,
-          loadedRunIdsRef.current,
-        );
-        indexRef.current = nextRunIndex;
-
-        const run = runsRef.current[nextRunIndex];
-        if (!run) {
-          indexRef.current = -1;
-          return;
-        }
-
-        const requestThreadId = threadIdRef.current;
-        loadingRunIdRef.current = run.run_id;
-        const beforeSeq = runBeforeSeqRef.current.get(run.run_id);
-        const url = buildRunMessagesUrl(
-          getBackendBaseURL(),
-          requestThreadId,
-          run.run_id,
-          beforeSeq,
-        );
-        const result: RunMessagesPageResponse = await fetch(url, {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          credentials: "include",
-        }).then((res) => {
-          return res.json();
-        });
-        if (
-          loadGenerationRef.current !== loadGeneration ||
-          threadIdRef.current !== requestThreadId
-        ) {
-          return;
-        }
-        const _messages = result.data.filter(
-          (m) => !m.metadata.caller?.startsWith("middleware:"),
-        );
-        setMessageRows((prev) =>
-          dedupeRunMessagesByIdentity([..._messages, ...prev]),
-        );
-        const nextBeforeSeq = getNextRunMessagesBeforeSeq(result);
-        if (typeof nextBeforeSeq === "number") {
-          runBeforeSeqRef.current.set(run.run_id, nextBeforeSeq);
-          pendingLoadRef.current = true;
-        } else if (nextBeforeSeq === undefined) {
-          console.warn(
-            `Run ${run.run_id} returned has_more without message seq values; leaving it pending for retry.`,
-          );
-        } else {
-          runBeforeSeqRef.current.delete(run.run_id);
-          loadedRunIdsRef.current.add(run.run_id);
-          if (
-            shouldAutoContinueOnEmptyRun(
-              _messages.length,
-              consecutiveEmptyLoads,
-            )
-          ) {
-            consecutiveEmptyLoads += 1;
-            pendingLoadRef.current = true;
-          } else {
-            consecutiveEmptyLoads = 0;
-          }
-        }
-        indexRef.current = findLatestUnloadedRunIndex(
-          runsRef.current,
-          loadedRunIdsRef.current,
-        );
-      } while (pendingLoadRef.current);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      if (loadGenerationRef.current === loadGeneration) {
-        loadingRef.current = false;
-        loadingRunIdRef.current = null;
-        setLoading(false);
-      }
-    }
-  }, [enabled]);
   useEffect(() => {
-    const threadChanged = threadIdRef.current !== threadId;
-    threadIdRef.current = threadId;
+    setAppendedMessages([]);
+  }, [threadId]);
 
-    if (!enabled || threadChanged) {
-      loadGenerationRef.current += 1;
-      runsRef.current = [];
-      indexRef.current = -1;
-      pendingLoadRef.current = false;
-      loadingRunIdRef.current = null;
-      loadedRunIdsRef.current = new Set();
-      runBeforeSeqRef.current = new Map();
-      loadingRef.current = false;
-      setLoading(false);
-      setMessageRows([]);
-      setAppendedMessages([]);
-    }
-
-    if (!enabled) {
-      return;
-    }
-
-    if (runs.data && runs.data.length > 0) {
-      runsRef.current = runs.data ?? [];
-      indexRef.current = findLatestUnloadedRunIndex(
-        runs.data,
-        loadedRunIdsRef.current,
-      );
-    }
-    loadMessages().catch(() => {
+  useEffect(() => {
+    if (historyQuery.error) {
+      console.error(historyQuery.error);
       toast.error("Failed to load thread history.");
-    });
-  }, [enabled, threadId, runs.data, loadMessages]);
+    }
+  }, [historyQuery.error]);
 
   const appendMessages = useCallback((_messages: Message[]) => {
     setAppendedMessages((prev) => {
       return dedupeMessagesByIdentity([...prev, ..._messages]);
     });
   }, []);
-  const hasThreadId = Boolean(threadId);
-  const hasUnloadedRuns = Boolean(
-    runs.data?.some((run) => !loadedRunIdsRef.current.has(run.run_id)),
-  );
-  const isRunsLoading =
-    enabled &&
-    hasThreadId &&
-    (runs.isLoading || (runs.isFetching && !runs.data));
-  const isRunsUnresolved =
-    enabled && hasThreadId && !runs.data && !runs.isError;
-  const hasMore =
-    enabled && hasThreadId && (indexRef.current >= 0 || hasUnloadedRuns);
   return {
-    runs: runs.data,
     messages,
-    loading: loading || isRunsLoading || isRunsUnresolved,
+    loading: historyQuery.isLoading || historyQuery.isFetchingNextPage,
     appendMessages,
-    hasMore,
-    loadMore: loadMessages,
+    hasMore: Boolean(historyQuery.hasNextPage),
+    loadMore: historyQuery.fetchNextPage,
   };
 }
 

@@ -1,0 +1,158 @@
+"""Cross-store contracts used by thread-global history pagination."""
+
+from __future__ import annotations
+
+import pytest
+
+from deerflow.runtime import RunManager, RunStatus
+from deerflow.runtime.events.store.memory import MemoryRunEventStore
+from deerflow.runtime.runs.store.memory import MemoryRunStore
+
+
+async def _seed_ai_messages(store):
+    await store.put(
+        thread_id="t1",
+        run_id="r1",
+        event_type="llm.ai.response",
+        category="message",
+        content={"type": "ai", "content": "first"},
+        metadata={"caller": "lead_agent"},
+    )
+    await store.put(
+        thread_id="t1",
+        run_id="r1",
+        event_type="llm.ai.response",
+        category="message",
+        content={"type": "ai", "content": "middleware"},
+        metadata={"caller": "middleware:title"},
+    )
+    last = await store.put(
+        thread_id="t1",
+        run_id="r1",
+        event_type="llm.ai.response",
+        category="message",
+        content={"type": "ai", "content": "last"},
+        metadata={"caller": "lead_agent"},
+    )
+    other = await store.put(
+        thread_id="t1",
+        run_id="r2",
+        event_type="llm.ai.response",
+        category="message",
+        content={"type": "ai", "content": "other"},
+        metadata={"caller": "lead_agent"},
+    )
+    return {"r1": last["seq"], "r2": other["seq"]}
+
+
+@pytest.mark.anyio
+async def test_memory_event_store_returns_global_last_non_middleware_ai_seq():
+    store = MemoryRunEventStore()
+    expected = await _seed_ai_messages(store)
+    assert await store.get_last_visible_ai_seq_by_run("t1", {"r1", "r2", "missing"}) == expected
+
+
+@pytest.mark.anyio
+async def test_jsonl_event_store_returns_global_last_non_middleware_ai_seq(tmp_path):
+    from deerflow.runtime.events.store.jsonl import JsonlRunEventStore
+
+    store = JsonlRunEventStore(base_dir=tmp_path)
+    expected = await _seed_ai_messages(store)
+    assert await store.get_last_visible_ai_seq_by_run("t1", {"r1", "r2", "missing"}) == expected
+
+
+@pytest.mark.anyio
+async def test_db_event_store_returns_global_last_non_middleware_ai_seq(tmp_path):
+    from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
+    from deerflow.runtime.events.store.db import DbRunEventStore
+
+    await init_engine("sqlite", url=f"sqlite+aiosqlite:///{tmp_path / 'events.db'}", sqlite_dir=str(tmp_path))
+    try:
+        store = DbRunEventStore(get_session_factory())
+        expected = await _seed_ai_messages(store)
+        assert await store.get_last_visible_ai_seq_by_run("t1", {"r1", "r2", "missing"}) == expected
+    finally:
+        await close_engine()
+
+
+@pytest.mark.anyio
+async def test_memory_run_store_supersession_is_unbounded_and_owner_scoped():
+    store = MemoryRunStore()
+    for index in range(105):
+        await store.put(f"normal-{index}", thread_id="t1", user_id="alice", status="success")
+    await store.put(
+        "regen-success",
+        thread_id="t1",
+        user_id="alice",
+        status="success",
+        metadata={"regenerate_from_run_id": "source-success"},
+    )
+    await store.put(
+        "regen-failed",
+        thread_id="t1",
+        user_id="alice",
+        status="error",
+        metadata={"regenerate_from_run_id": "source-failed"},
+    )
+    await store.put(
+        "regen-bob",
+        thread_id="t1",
+        user_id="bob",
+        status="success",
+        metadata={"regenerate_from_run_id": "source-bob"},
+    )
+
+    assert await store.list_successful_regenerate_sources("t1", user_id="alice") == {"source-success"}
+
+
+@pytest.mark.anyio
+async def test_run_repository_batch_queries_are_unbounded_and_owner_scoped(tmp_path):
+    from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
+    from deerflow.persistence.run import RunRepository
+
+    await init_engine("sqlite", url=f"sqlite+aiosqlite:///{tmp_path / 'runs.db'}", sqlite_dir=str(tmp_path))
+    try:
+        repo = RunRepository(get_session_factory())
+        for index in range(105):
+            await repo.put(f"normal-{index}", thread_id="t1", user_id="alice", status="success")
+        await repo.put(
+            "regen-a",
+            thread_id="t1",
+            user_id="alice",
+            status="success",
+            metadata={"regenerate_from_run_id": "source-a"},
+        )
+        await repo.put(
+            "regen-b",
+            thread_id="t1",
+            user_id="bob",
+            status="success",
+            metadata={"regenerate_from_run_id": "source-b"},
+        )
+
+        assert await repo.list_successful_regenerate_sources("t1", user_id="alice") == {"source-a"}
+        rows = await repo.get_many_by_thread("t1", {"normal-0", "regen-a", "regen-b"}, user_id="alice")
+        assert set(rows) == {"normal-0", "regen-a"}
+    finally:
+        await close_engine()
+
+
+@pytest.mark.anyio
+async def test_run_manager_prefers_latest_in_memory_regenerate_status():
+    store = MemoryRunStore()
+    await store.put(
+        "regen",
+        thread_id="t1",
+        status="success",
+        metadata={"regenerate_from_run_id": "source"},
+    )
+    manager = RunManager(store=store)
+    # Simulate the same logical run being newer in memory than its persisted
+    # successful snapshot.
+    persisted = await manager.get("regen")
+    assert persisted is not None
+    manager._runs["regen"] = persisted
+    manager._index_run_locked(persisted)
+    persisted.status = RunStatus.error
+
+    assert await manager.list_successful_regenerate_sources("t1") == set()

@@ -197,6 +197,19 @@ class JsonlRunEventStore(RunEventStore):
         else:
             return filtered[-limit:] if len(filtered) > limit else filtered
 
+    async def get_last_visible_ai_seq_by_run(self, thread_id, run_ids):
+        def _scan() -> dict[str, int]:
+            result: dict[str, int] = {}
+            for run_id in run_ids:
+                for event in reversed(self._read_run_events(thread_id, run_id)):
+                    caller = str((event.get("metadata") or {}).get("caller", ""))
+                    if event.get("category") == "message" and event.get("event_type") in {"llm.ai.response", "ai_message"} and not caller.startswith("middleware:"):
+                        result[run_id] = event["seq"]
+                        break
+            return result
+
+        return await asyncio.to_thread(_scan)
+
     async def count_messages(self, thread_id):
         all_events = await asyncio.to_thread(self._read_thread_events, thread_id)
         return sum(1 for e in all_events if e.get("category") == "message")

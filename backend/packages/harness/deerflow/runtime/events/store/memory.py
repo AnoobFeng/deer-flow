@@ -136,6 +136,17 @@ class MemoryRunEventStore(RunEventStore):
             return window[:limit]
         return window[-limit:]
 
+    async def get_last_visible_ai_seq_by_run(self, thread_id, run_ids):
+        result: dict[str, int] = {}
+        messages_by_run = self._messages_by_run.get(thread_id, {})
+        for run_id in run_ids:
+            for event in reversed(messages_by_run.get(run_id, [])):
+                caller = str((event.get("metadata") or {}).get("caller", ""))
+                if event.get("event_type") in {"llm.ai.response", "ai_message"} and not caller.startswith("middleware:"):
+                    result[run_id] = event["seq"]
+                    break
+        return result
+
     async def count_messages(self, thread_id):
         return len(self._messages.get(thread_id, []))
 
