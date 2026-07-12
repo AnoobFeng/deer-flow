@@ -170,3 +170,20 @@ async def test_run_manager_prefers_latest_in_memory_regenerate_status():
     persisted.status = RunStatus.error
 
     assert await manager.list_successful_regenerate_sources("t1") == set()
+
+
+@pytest.mark.anyio
+async def test_run_manager_uses_latest_attempt_for_shared_regenerate_source():
+    manager = RunManager()
+    older = await manager.create(
+        "t1",
+        metadata={"regenerate_from_run_id": "source"},
+    )
+    older.status = RunStatus.success
+    newer = await manager.create(
+        "t1",
+        metadata={"regenerate_from_run_id": "source"},
+    )
+    newer.status = RunStatus.error
+
+    assert await manager.list_successful_regenerate_sources("t1") == set()

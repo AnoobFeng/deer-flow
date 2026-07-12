@@ -716,6 +716,17 @@ async def _scan_thread_message_page(
         if not raw:
             break
 
+        invalid_seq_rows = [row for row in raw if not isinstance(row.get("seq"), int)]
+        if invalid_seq_rows:
+            logger.error(
+                "Thread message scan found rows without sequence values: thread_id=%s scan_before=%s row_count=%d invalid_count=%d",
+                thread_id,
+                scan_before,
+                len(raw),
+                len(invalid_seq_rows),
+            )
+            raise RuntimeError("Run event message rows are missing sequence values")
+
         for row in reversed(raw):
             if _is_middleware_message_row(row) or row.get("run_id") in superseded_run_ids:
                 continue
@@ -723,15 +734,7 @@ async def _scan_thread_message_page(
             if len(visible_desc) == limit + 1:
                 break
 
-        raw_seqs = [row.get("seq") for row in raw if isinstance(row.get("seq"), int)]
-        if not raw_seqs:
-            logger.error(
-                "Thread message scan found rows without sequence values: thread_id=%s scan_before=%s row_count=%d",
-                thread_id,
-                scan_before,
-                len(raw),
-            )
-            raise RuntimeError("Run event message rows are missing sequence values")
+        raw_seqs = [row["seq"] for row in raw]
         next_scan_before = min(raw_seqs)
         if scan_before is not None and next_scan_before >= scan_before:
             logger.error(

@@ -219,6 +219,30 @@ def test_thread_page_helpers_forward_explicit_user_without_request_context():
     assert event_store.get_last_visible_ai_seq_by_run.await_args.kwargs["user_id"] == "background-user"
 
 
+def test_thread_page_scan_rejects_any_row_without_sequence():
+    event_store = AsyncMock()
+    event_store.list_messages.return_value = [
+        {"run_id": "run-1", "seq": 1, "content": {"type": "human"}},
+        {"run_id": "run-1", "content": {"type": "ai"}},
+    ]
+    run_manager = AsyncMock()
+    run_manager.list_successful_regenerate_sources.return_value = set()
+    request = MagicMock()
+    request.app.state.run_event_store = event_store
+    request.app.state.run_manager = run_manager
+
+    with pytest.raises(RuntimeError, match="missing sequence values"):
+        asyncio.run(
+            thread_runs._scan_thread_message_page(
+                "thread-1",
+                limit=1,
+                before_seq=None,
+                request=request,
+                user_id="user-1",
+            )
+        )
+
+
 def test_thread_page_batch_hydrates_duration_for_old_runs():
     store = MemoryRunEventStore()
     asyncio.run(_put_message(store, "run-old", "ai", "answer"))

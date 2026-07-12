@@ -484,6 +484,10 @@ class RunManager:
             memory_records = [record for record in self._thread_records_locked(thread_id) if user_id is None or record.user_id == user_id]
 
         sources = set(await self._store.list_successful_regenerate_sources(thread_id, user_id=user_id)) if self._store is not None else set()
+        # _thread_records_locked preserves the insertion order of the thread
+        # index. Applying records oldest-to-newest makes the latest in-memory
+        # regeneration attempt authoritative when several attempts reference
+        # the same source run (for example, a failed retry after a success).
         for record in memory_records:
             source = record.metadata.get("regenerate_from_run_id")
             if not isinstance(source, str) or not source:
