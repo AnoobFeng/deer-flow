@@ -46,6 +46,32 @@ test("mergeMessages removes duplicate messages already present in history", () =
   expect(mergeMessages([human, ai, human, ai], [], [])).toEqual([human, ai]);
 });
 
+test("mergeMessages does not collapse an unloaded gap before the first shared anchor", () => {
+  const protectedEarly = {
+    id: "protected-early",
+    type: "human",
+    content: "写一个算法PDF",
+  } as Message;
+  const latestHuman = {
+    id: "latest-human",
+    type: "human",
+    content: "写一本超级小说",
+  } as Message;
+  const latestAi = {
+    id: "latest-ai",
+    type: "ai",
+    content: "latest answer",
+  } as Message;
+
+  expect(
+    mergeMessages(
+      [latestHuman, latestAi],
+      [protectedEarly, latestHuman],
+      [],
+    ),
+  ).toEqual([latestHuman, latestAi]);
+});
+
 test("mergeMessages lets live thread messages replace overlapping history", () => {
   const oldHuman = {
     id: "human-1",
@@ -665,13 +691,13 @@ test("resolveTransientHistoryBridge appends rescued messages after canonical his
   ).toEqual([olderLoadedHuman, ...summarizationMovedMessages]);
 });
 
-test("resolveTransientHistoryBridge inserts paginated compression rescue before its canonical anchor", () => {
+test("resolveTransientHistoryBridge does not collapse an unloaded gap before its first canonical anchor", () => {
   // Real regression shape from thread 4e81444d-c6ce-471e-93fd-b6ddb18dc938:
   // the default history page starts at event seq=35, while the clarification
   // conversation lives at seq=2..14. Context compression captured both the
-  // old turns and a later message that overlaps the canonical page. After the
-  // overlap is confirmed/pruned, its identity must remain as an ordering
-  // anchor instead of letting the old turns fall through to the page tail.
+  // old turns and a later message that overlaps the canonical page. The old
+  // turns must stay suppressed until their canonical page loads; otherwise
+  // the unloaded seq=15..34 gap is visually collapsed before the page anchor.
   const clarificationRequest = {
     id: "clarification-request",
     type: "ai",
@@ -731,16 +757,7 @@ test("resolveTransientHistoryBridge inserts paginated compression rescue before 
       missingAfterCanonicalRefetch,
       bridgeOrder,
     ).map((message) => message.id),
-  ).toEqual([
-    "human-1",
-    "clarification-request",
-    "clarification-card",
-    "clarification-answer",
-    "direction-question",
-    "direction-answer",
-    "event-seq-35",
-    "event-seq-88",
-  ]);
+  ).toEqual(["event-seq-35", "event-seq-88"]);
 });
 
 test("resolveTransientHistoryBridge does not duplicate once canonical history catches up", () => {

@@ -327,7 +327,7 @@ describe("invalidateStoppedThreadCaches", () => {
     expect(queryKeys()).toContainEqual(["thread-token-usage", "thread-1"]);
   });
 
-  test("keeps only the latest history page before invalidating", () => {
+  test("preserves loaded history pages while invalidating", () => {
     const client = new QueryClient();
     const key = ["thread-messages", "thread-1"] as const;
     const latest = { data: [], has_more: true, next_before_seq: 20 };
@@ -340,8 +340,8 @@ describe("invalidateStoppedThreadCaches", () => {
     invalidateStoppedThreadCaches(client, "thread-1", false);
 
     expect(client.getQueryData(key)).toEqual({
-      pages: [latest],
-      pageParams: [null],
+      pages: [latest, older],
+      pageParams: [null, 20],
     });
   });
 

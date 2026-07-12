@@ -353,6 +353,7 @@ export function mergeMessages(
   const beforeAnchor = new Map<string, Message[]>();
   let pending: Message[] = [];
   let lastAnchorIdentity: string | undefined;
+  let hasSharedAnchor = false;
 
   // A summarized checkpoint is not necessarily a contiguous history suffix:
   // middleware may retain protected prompt/input messages at the front and a
@@ -370,13 +371,17 @@ export function mergeMessages(
       continue;
     }
 
-    if (pending.length > 0) {
+    if (pending.length > 0 && hasSharedAnchor) {
       beforeAnchor.set(identity, [
         ...(beforeAnchor.get(identity) ?? []),
         ...pending,
       ]);
-      pending = [];
     }
+    // A summarized checkpoint may start with a protected message whose true
+    // canonical position is separated from this anchor by unloaded pages.
+    // Suppress that ambiguous prefix instead of visually collapsing the gap.
+    pending = [];
+    hasSharedAnchor = true;
     lastAnchorIdentity = identity;
 
     // A hidden checkpoint control message must not replace a visible canonical
@@ -525,16 +530,20 @@ export function resolveTransientHistoryBridge(
   const emittedMissingIdentities = new Set<string>();
   let pending: Message[] = [];
   let lastAnchorIdentity: string | undefined;
+  let hasCanonicalAnchor = false;
 
   for (const identity of bridgeOrder) {
     if (presentIdentities.has(identity)) {
-      if (pending.length > 0) {
+      if (pending.length > 0 && hasCanonicalAnchor) {
         beforeAnchor.set(identity, [
           ...(beforeAnchor.get(identity) ?? []),
           ...pending,
         ]);
-        pending = [];
       }
+      // The prefix before the first loaded anchor has no trustworthy position:
+      // cursor pages containing its intervening history may not be loaded yet.
+      pending = [];
+      hasCanonicalAnchor = true;
       lastAnchorIdentity = identity;
       continue;
     }
