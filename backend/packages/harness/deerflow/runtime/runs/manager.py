@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
+from deerflow.runtime.user_context import AUTO, _AutoSentinel, resolve_user_id
 from deerflow.utils.time import now_iso as _now_iso
 
 from .schemas import DisconnectMode, RunStatus
@@ -565,7 +566,12 @@ class RunManager:
                     logger.warning("Failed to map store row for run %s", run_id, exc_info=True)
         return sorted(records_by_id.values(), key=lambda record: record.created_at, reverse=True)[:limit]
 
-    async def list_successful_regenerate_sources(self, thread_id: str, *, user_id: str | None = None) -> set[str]:
+    async def list_successful_regenerate_sources(
+        self,
+        thread_id: str,
+        *,
+        user_id: str | None | _AutoSentinel = AUTO,
+    ) -> set[str]:
         """Return all source runs superseded by successful regenerations.
 
         Unlike :meth:`list_by_thread`, this query is intentionally unbounded.
@@ -574,10 +580,11 @@ class RunManager:
         Store failures propagate because supersession filtering is required for
         correct pagination.
         """
+        resolved_user_id = resolve_user_id(user_id, method_name="RunManager.list_successful_regenerate_sources")
         async with self._lock:
-            memory_records = [record for record in self._thread_records_locked(thread_id) if user_id is None or record.user_id == user_id]
+            memory_records = [record for record in self._thread_records_locked(thread_id) if resolved_user_id is None or record.user_id == resolved_user_id]
 
-        sources = set(await self._store.list_successful_regenerate_sources(thread_id, user_id=user_id)) if self._store is not None else set()
+        sources = set(await self._store.list_successful_regenerate_sources(thread_id, user_id=resolved_user_id)) if self._store is not None else set()
         # _thread_records_locked preserves the insertion order of the thread
         # index. Applying records oldest-to-newest makes the latest in-memory
         # regeneration attempt authoritative when several attempts reference
@@ -596,13 +603,14 @@ class RunManager:
         thread_id: str,
         run_ids: set[str],
         *,
-        user_id: str | None = None,
+        user_id: str | None | _AutoSentinel = AUTO,
     ) -> dict[str, RunRecord]:
         """Batch-load selected thread runs with in-memory records preferred."""
         if not run_ids:
             return {}
+        resolved_user_id = resolve_user_id(user_id, method_name="RunManager.get_many_by_thread")
         async with self._lock:
-            records_by_id = {record.run_id: record for record in self._thread_records_locked(thread_id) if record.run_id in run_ids and (user_id is None or record.user_id == user_id)}
+            records_by_id = {record.run_id: record for record in self._thread_records_locked(thread_id) if record.run_id in run_ids and (resolved_user_id is None or record.user_id == resolved_user_id)}
         if self._store is None:
             return records_by_id
 
@@ -610,7 +618,7 @@ class RunManager:
         if not remaining:
             return records_by_id
         try:
-            rows = await self._store.get_many_by_thread(thread_id, set(remaining), user_id=user_id)
+            rows = await self._store.get_many_by_thread(thread_id, set(remaining), user_id=resolved_user_id)
         except Exception:
             logger.warning("Failed to batch-hydrate runs for thread %s", thread_id, exc_info=True)
             return records_by_id

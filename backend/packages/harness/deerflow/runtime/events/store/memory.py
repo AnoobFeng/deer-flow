@@ -143,7 +143,7 @@ class MemoryRunEventStore(RunEventStore):
         for run_id in run_ids:
             for event in reversed(messages_by_run.get(run_id, [])):
                 caller = str((event.get("metadata") or {}).get("caller", ""))
-                if event.get("event_type") in {"llm.ai.response", "ai_message"} and not caller.startswith("middleware:"):
+                if event.get("category") == "message" and event.get("event_type") in {"llm.ai.response", "ai_message"} and not caller.startswith("middleware:"):
                     result[run_id] = event["seq"]
                     break
         return result

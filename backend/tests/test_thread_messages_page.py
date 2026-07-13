@@ -24,7 +24,7 @@ def _make_app(event_store: MemoryRunEventStore, *, superseded: set[str] | None =
     run_manager.get_many_by_thread.return_value = records or {}
     app.state.run_manager = run_manager
     feedback_repo = AsyncMock()
-    feedback_repo.list_by_thread_grouped.return_value = feedback or {}
+    feedback_repo.list_by_run_ids.return_value = feedback or {}
     app.state.feedback_repo = feedback_repo
     return app
 
@@ -184,6 +184,9 @@ def test_thread_page_feedback_only_attaches_to_global_last_ai_row():
     scan_user_id = store.list_messages.await_args.kwargs["user_id"]
     enrichment_user_id = store.get_last_visible_ai_seq_by_run.await_args.kwargs["user_id"]
     assert enrichment_user_id == scan_user_id
+    feedback_repo = app.state.feedback_repo
+    feedback_repo.list_by_run_ids.assert_awaited_once_with("thread-1", {"run-1"}, user_id=scan_user_id)
+    feedback_repo.list_by_thread_grouped.assert_not_awaited()
 
 
 def test_thread_page_helpers_forward_explicit_user_without_request_context():

@@ -773,9 +773,10 @@ async def _enrich_thread_message_page(
     event_store = get_run_event_store(request)
     last_ai_seq_by_run = await event_store.get_last_visible_ai_seq_by_run(thread_id, run_ids, user_id=user_id)
     feedback_map: dict[str, dict] = {}
-    if any(row.get("seq") == last_ai_seq_by_run.get(row.get("run_id")) for row in data):
+    feedback_run_ids = {run_id for row in data if isinstance((run_id := row.get("run_id")), str) and row.get("seq") == last_ai_seq_by_run.get(run_id)}
+    if feedback_run_ids:
         feedback_repo = get_feedback_repo(request)
-        feedback_map = await feedback_repo.list_by_thread_grouped(thread_id, user_id=user_id)
+        feedback_map = await feedback_repo.list_by_run_ids(thread_id, feedback_run_ids, user_id=user_id)
 
     for row in data:
         run_id = row.get("run_id")
