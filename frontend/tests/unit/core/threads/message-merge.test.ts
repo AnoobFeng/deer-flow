@@ -64,11 +64,7 @@ test("mergeMessages does not collapse an unloaded gap before the first shared an
   } as Message;
 
   expect(
-    mergeMessages(
-      [latestHuman, latestAi],
-      [protectedEarly, latestHuman],
-      [],
-    ),
+    mergeMessages([latestHuman, latestAi], [protectedEarly, latestHuman], []),
   ).toEqual([latestHuman, latestAi]);
 });
 

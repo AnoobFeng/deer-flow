@@ -282,18 +282,6 @@ export function getThreadHistoryNextPageParam(
 export const threadHistoryQueryKey = (threadId: string) =>
   ["thread-messages", threadId] as const;
 
-export function keepLatestThreadHistoryPage(
-  oldData: InfiniteData<ThreadMessagesPageResponse> | undefined,
-): InfiniteData<ThreadMessagesPageResponse> | undefined {
-  if (!oldData || oldData.pages.length <= 1) {
-    return oldData;
-  }
-  return {
-    pages: oldData.pages.slice(0, 1),
-    pageParams: oldData.pageParams.slice(0, 1),
-  };
-}
-
 export function buildThreadMessagesPageUrl(
   baseUrl: string,
   threadId: string,
@@ -842,10 +830,6 @@ export function invalidateStoppedThreadCaches(
   }
 
   void queryClient.invalidateQueries({ queryKey: ["thread", threadId] });
-  queryClient.setQueryData(
-    threadHistoryQueryKey(threadId),
-    keepLatestThreadHistoryPage,
-  );
   void queryClient.invalidateQueries({
     queryKey: threadHistoryQueryKey(threadId),
   });
